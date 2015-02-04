@@ -1,3 +1,6 @@
 [submodule "pyLAR"]
 	path = pyLAR
 	url = git@github.com:KitwareMedical/pyLAR.git
+[submodule "PyRPCA"]
+	path = PyRPCA
+	url = git@github.com:kuantkid/PyRPCA.git
