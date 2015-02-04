@@ -1,0 +1,3 @@
+[submodule "pyLAR"]
+	path = pyLAR
+	url = git@github.com:KitwareMedical/pyLAR.git
