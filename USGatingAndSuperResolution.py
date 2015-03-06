@@ -194,6 +194,9 @@ class USGatingAndSuperResolution(object):
             elif self.detrend_mode == '/':
                 ts_seasonal = ts / ts_trend
 
+            if self.similarityMethod == 'PCA':
+                ts_seasonal *= -1
+    
             # compute periodogram entropy of the seasonal part
             freq, power = scipy.signal.periodogram(ts_seasonal)
 
