@@ -9,31 +9,34 @@ import angles
 sys.path.insert(0, 'pyLAR')
 import core.ialm
 
+
 def normalizeAngles(angleList, angle_range):
-    return np.array([angles.normalize(i, angle_range[0], angle_range[1]) for i in angleList])
+    return np.array([angles.normalize(i, angle_range[0], angle_range[1])
+                     for i in angleList])
+
 
 class USGatingAndSuperResolution(object):
-    
+
     def __init__(self, 
-                 # noise suppression parameters                 
-                 medianFilterSize = 3, xyDownsamplingFactor = 1, gammaFactor = 1,
+                 # noise suppression parameters
+                 medianFilterSize=3, xyDownsamplingFactor=1, gammaFactor=1,
                  # phase estimation parameters
-                 similarityMethod = 'PCA', pca_n_components = 0.99, 
-                 lowessFrac=0.3, detrend_mode = '/'
+                 similarityMethod='PCA', pca_n_components=0.99,
+                 lowessFrac=0.3, detrend_mode='/'
                  ):
         
         # noise suppression parameters
-        self.medianFilterSize = medianFilterSize        
+        self.medianFilterSize = medianFilterSize
         self.gammaFactor = gammaFactor
         
         if not (xyDownsamplingFactor > 0 and xyDownsamplingFactor <= 1.0):
-            raise ValueError('xyDownsamplingFactor should in (0, 1]')            
+            raise ValueError('xyDownsamplingFactor should in (0, 1]')
         self.xyDownsamplingFactor = xyDownsamplingFactor
         
         # phase estimation parameters
         if similarityMethod not in ['NCORR', 'PCA']:
-            raise ValueError("Invalid similarity method. Must be NCORR or PCA")            
-        self.similarityMethod = similarityMethod 
+            raise ValueError("Invalid similarity method. Must be NCORR or PCA")
+        self.similarityMethod = similarityMethod
 
         self.pca_n_components = pca_n_components
 
@@ -55,8 +58,8 @@ class USGatingAndSuperResolution(object):
                                                                     (self.medianFilterSize, 
                                                                      self.medianFilterSize, 1))
 
-        # reduce xy size to speed up low-rank + sparse dcomposition if requested 
-        if self.xyDownsamplingFactor < 1:    
+        # reduce xy size to speed up low-rank + sparse decomposition
+        if self.xyDownsamplingFactor < 1:
             imInputForLowrank = scipy.ndimage.interpolation.zoom(imInputForLowrank, 
                                                                  (self.xyDownsamplingFactor, 
                                                                   self.xyDownsamplingFactor, 1))  
@@ -143,7 +146,7 @@ class USGatingAndSuperResolution(object):
 
                 for fid in range(keyFrameId, imAnalyze.shape[2]):
 
-                    p2pVec = X_proj[fid, :numEigenVectors] - X_proj[keyFrameId, :numEigenVectors]                 
+                    p2pVec = X_proj[fid, :numEigenVectors] - X_proj[keyFrameId, :numEigenVectors]
                     dist = np.sqrt(np.sum(p2pVec**2))    
 
                     simMat[keyFrameId, fid] = -dist
@@ -154,7 +157,8 @@ class USGatingAndSuperResolution(object):
             print '\ntook {} seconds'.format(time.time() - tSimMat)
 
         else:
-            raise ValueError('Invalid similarity method %s' % self.similarityMethod)
+            raise ValueError('Invalid similarity method %s' 
+                             % self.similarityMethod)
         
         # store results
         self.simMat_ = simMat
@@ -173,18 +177,18 @@ class USGatingAndSuperResolution(object):
         
         # trend extraction using loess (local regression)
         def trendLowess(a, frac=0.3):
-            return sm.nonparametric.lowess(a, np.arange(len(a)), 
-                                           frac=frac, is_sorted=True)[:,1]
+            return sm.nonparametric.lowess(a, np.arange(len(a)),
+                                           frac=frac, is_sorted=True)[:, 1]
 
-        # find the optimal key frame and use it to decompose 
-        spectralEntropy = np.zeros((simMat.shape[0], 1)) 
+        # find the optimal key frame and use it to decompose
+        spectralEntropy = np.zeros((simMat.shape[0], 1))
 
         simMat_Trend = np.zeros_like(simMat)
         simMat_Seasonal = np.zeros_like(simMat)
 
         for fid in range(simMat.shape[0]):
 
-            ts = simMat[fid,]
+            ts = simMat[fid, ]
 
             # decompose into trend and seasonal parts
             ts_trend = trendLowess(ts)
@@ -201,20 +205,22 @@ class USGatingAndSuperResolution(object):
             freq, power = scipy.signal.periodogram(ts_seasonal)
 
             # store result
-            simMat_Trend[fid,] = ts_trend
-            simMat_Seasonal[fid,] = ts_seasonal
+            simMat_Trend[fid, ] = ts_trend
+            simMat_Seasonal[fid, ] = ts_seasonal
             spectralEntropy[fid] = scipy.stats.entropy(power)
 
         fid_best = np.argmin(spectralEntropy)    
         ts = simMat[fid_best, ]
         ts_trend = simMat_Trend[fid_best, ]
         ts_seasonal = simMat_Seasonal[fid_best, ]
+        print "Chose frame %d as key frame" % fid_best
 
         # estimate period from the periodogram
         freq, power = scipy.signal.periodogram(ts_seasonal)
         maxPowerLoc = np.argmax(power)
         period = 1.0/freq[maxPowerLoc]
         print "Estimated period = %.2f frames" % period
+        print "Estimated number of periods = %.2f" % (ts_seasonal.size / period) 
         
         #beatsPerMinute = period * 60.0 / framesPerSecDownsmp
         #print "beats per minute at %f fps = %f" % (framesPerSecDownsmp, beatsPerMinute)
@@ -265,31 +271,37 @@ class USGatingAndSuperResolution(object):
         # Done processing
         print '\n>> Done processing ... took a total of %.2f seconds' % (time.time() - tProcessing)
         
-    def generateSinglePeriodVideo(self, numOutFrames, sigmaGKRFactor=2, phaseRange=[0,1], imInput=None):
+    def generateSinglePeriodVideo(self, numOutFrames,
+                                  sigmaGKRFactor=2,
+                                  phaseRange=[0, 1],
+                                  imInput=np.array([])):
         
         # define gaussian
-        def gauss_kernel(x, mu, sigma):  
+        def gauss_kernel(x, mu, sigma):
             r = (normalizeAngles(x - mu, [-np.pi, np.pi]))
-            return np.exp( -r**2 / (2.0 * sigma**2) )
+            return np.exp(-r**2 / (2.0 * sigma**2))
 
         # validate phase argument
-        if not (len(phaseRange) == 2 and 
-                np.all(phaseRange) >= 0 and np.all(phaseRange) <= 1 and                
+        if not (len(phaseRange) == 2 and
+                np.all(phaseRange) >= 0 and np.all(phaseRange) <= 1 and
                 phaseRange[0] < phaseRange[1]):
             raise ValueError('Invalid phase range')
             
+        # set imInput properly
+        if imInput.size == 0:
+            imInput = self.imLowRank_
+    
         # compute sigmaGKR 
-        sigmaGKR = sigmaGKRFactor * np.mean( np.abs(np.diff(np.sort(self.ts_instaphase_))) )
+        sigmaGKR = sigmaGKRFactor * np.mean(np.abs(np.diff(np.sort(self.ts_instaphase_))))
         print 'sigmaGKR = ', sigmaGKR
 
-        # if imInput is not provided use imLowRank to generate the video
-        if not imInput:
-            imInput = self.imLowRank_
-            
-        # generate video    
-        X = np.reshape(imInput, (np.prod(imInput.shape[:2]), imInput.shape[2])).T
-        
-        phaseRange = [np.pi * (2 * i - 1) for i in phaseRange] # map to [-pi, pi]        
+        # map to [-pi, pi]
+        phaseRange = [np.pi * (2 * i - 1) for i in phaseRange]
+
+        # generate video
+        X = np.reshape(imInput,
+                       (np.prod(imInput.shape[:2]), imInput.shape[2])).T
+                
         phaseVals = np.linspace(phaseRange[0], phaseRange[1], numOutFrames)
 
         imOnePeriodVideo = []
@@ -300,7 +312,7 @@ class USGatingAndSuperResolution(object):
             curPhase = phaseVals[fid]
 
             # generate frame by rbf interpolation
-            w = gauss_kernel(self.ts_instaphase_, curPhase, sigmaGKR).T  
+            w = gauss_kernel(self.ts_instaphase_, curPhase, sigmaGKR).T
 
             imCurFrame = np.reshape(np.dot(w / w.sum(), X), imInput.shape[:2])
 
@@ -314,6 +326,6 @@ class USGatingAndSuperResolution(object):
             curPercent = np.floor(100.0*fid/numOutFrames)
             if curPercent > prevPercent:
                 prevPercent = curPercent
-                print '%.2d%%' % curPercent,         
-      
+                print '%.2d%%' % curPercent,
+     
         return imOnePeriodVideo
