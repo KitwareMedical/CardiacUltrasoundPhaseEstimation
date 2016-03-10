@@ -5,6 +5,7 @@ import sys
 import sklearn.decomposition
 import statsmodels.api as sm
 import angles
+import cv2
 
 sys.path.insert(0, 'pyLAR')
 import core.ialm
@@ -244,9 +245,15 @@ class USGatingAndSuperResolution(object):
         self.ts_analytic_ = ts_analytic
         self.ts_instaamp_ = ts_instaamp
         self.ts_instaphase_ = ts_instaphase
-        self.ts_instaphase_nmzd_ = (ts_instaphase + np.pi) / (2 * np.pi)        
+        self.ts_instaphase_nmzd_ = (ts_instaphase + np.pi) / (2 * np.pi)                
+    
+    
+    def setInput(self, imInput):
         
-    def process(self, imInput):
+        self._imInput = imInput
+        
+        
+    def process(self):
 
         tProcessing = time.time()
         
@@ -255,7 +262,7 @@ class USGatingAndSuperResolution(object):
         
         tDenoising = time.time()
         
-        self._denoise(imInput)
+        self._denoise(self._imInput)
         
         print '\nNoise suppression took a total of %.2f seconds' % (time.time() - tDenoising)
         
@@ -271,46 +278,40 @@ class USGatingAndSuperResolution(object):
         # Done processing
         print '\n>> Done processing ... took a total of %.2f seconds' % (time.time() - tProcessing)
         
-    def generateSinglePeriodVideo(self, numOutFrames,
-                                  sigmaGKRFactor=2,
-                                  phaseRange=[0, 1],
-                                  imInput=np.array([])):
         
+    def generateFramesFromPhaseValues(self, phaseVals,
+                                      imInput=np.array([]), sigmaGKRFactor=2):
+
+        # validate phase vals
+        phaseVals = np.array(phaseVals)
+        
+        if np.any(phaseVals < 0) or np.any(phaseVals > 1):
+            raise ValueError('Invalid phase values')
+
+        # set imInput
+        if imInput.size == 0:
+            imInput = self.imInput_
+
+        # compute sigmaGKR 
+        sigmaGKR = sigmaGKRFactor * np.mean(np.abs(np.diff(np.sort(self.ts_instaphase_))))
+        print 'sigmaGKR = ', sigmaGKR
+            
         # define gaussian
         def gauss_kernel(x, mu, sigma):
             r = (normalizeAngles(x - mu, [-np.pi, np.pi]))
             return np.exp(-r**2 / (2.0 * sigma**2))
 
-        # validate phase argument
-        if not (len(phaseRange) == 2 and
-                np.all(phaseRange) >= 0 and np.all(phaseRange) <= 1 and
-                phaseRange[0] < phaseRange[1]):
-            raise ValueError('Invalid phase range')
-            
-        # set imInput properly
-        if imInput.size == 0:
-            imInput = self.imLowRank_
-    
-        # compute sigmaGKR 
-        sigmaGKR = sigmaGKRFactor * np.mean(np.abs(np.diff(np.sort(self.ts_instaphase_))))
-        print 'sigmaGKR = ', sigmaGKR
-
-        # map to [-pi, pi]
-        phaseRange = [np.pi * (2 * i - 1) for i in phaseRange]
-
-        # generate video
-        X = np.reshape(imInput,
-                       (np.prod(imInput.shape[:2]), imInput.shape[2])).T
-                
-        phaseVals = np.linspace(phaseRange[0], phaseRange[1], numOutFrames)
-
-        imOnePeriodVideo = []
-        prevPercent = 0
-
+        # generate frames
+        imOutputVideo = []
+        
+        X = np.reshape(imInput, (np.prod(imInput.shape[:2]), imInput.shape[2])).T
+        
+        numOutFrames = len(phaseVals)
+        
         for fid in range(numOutFrames):
-
+            
             curPhase = phaseVals[fid]
-
+            
             # generate frame by rbf interpolation
             w = gauss_kernel(self.ts_instaphase_, curPhase, sigmaGKR).T
 
@@ -320,12 +321,37 @@ class USGatingAndSuperResolution(object):
             if fid == 0:
                 imOnePeriodVideo = imCurFrame
             else:
-                imOnePeriodVideo = np.dstack((imOnePeriodVideo, imCurFrame))
+                imOnePeriodVideo = np.dstack((imOutputVideo, imCurFrame))
 
             # update progress
             curPercent = np.floor(100.0*fid/numOutFrames)
             if curPercent > prevPercent:
                 prevPercent = curPercent
                 print '%.2d%%' % curPercent,
-     
-        return imOnePeriodVideo
+        
+        return imOutputVideo
+
+    
+    def generateVideo(self, numOutFrames, phaseRange,
+                      sigmaGKRFactor=2, imInput=np.array([])):
+
+        # validate phase argument
+        if not (len(phaseRange) == 2 and
+                np.all(phaseRange >= 0) and np.all(phaseRange <= 1) and
+                phaseRange[0] < phaseRange[1]):
+            raise ValueError('Invalid phase range')
+        
+        # generate video
+        phaseVals = np.linspace(phaseRange[0], phaseRange[1], numOutFrames)
+        
+        return self.generateFramesFromPhaseValues(phaseVals,
+                                                  imInput = imInput,
+                                                  sigmaGKRFactor=sigmaGKRFactor)
+
+    def generateSinglePeriodVideo(self, numOutFrames,
+                                  sigmaGKRFactor=2, imInput=np.array([])):
+        
+        phaseRange = [0, 1]
+        return self.generateVideo(numOutFrames, phaseRange,
+                                  sigmaGKRFactor=sigmaGKRFactor,
+                                  imInput=imInput)
