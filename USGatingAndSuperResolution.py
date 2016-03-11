@@ -280,7 +280,8 @@ class USGatingAndSuperResolution(object):
         
         
     def generateFramesFromPhaseValues(self, phaseVals,
-                                      imInput=np.array([]), sigmaGKRFactor=2):
+                                      imInput=np.array([]),
+                                      method='kernel_regression', **params):
 
         # validate phase vals
         phaseVals = np.array(phaseVals)
@@ -304,18 +305,32 @@ class USGatingAndSuperResolution(object):
         # generate frames
         imOutputVideo = []
         
-        X = np.reshape(imInput, (np.prod(imInput.shape[:2]), imInput.shape[2])).T
-        
         numOutFrames = len(phaseVals)
         
+        if method=='kernel_regression':   
+            X = np.reshape(imInput, (np.prod(imInput.shape[:2]), imInput.shape[2])).T
+        
+        if method=='optical_flow':
+            
+        
         for fid in range(numOutFrames):
-            
-            curPhase = phaseVals[fid]
-            
-            # generate frame by rbf interpolation
-            w = gauss_kernel(self.ts_instaphase_, curPhase, sigmaGKR).T
 
-            imCurFrame = np.reshape(np.dot(w / w.sum(), X), imInput.shape[:2])
+            curPhase = phaseVals[fid]
+            curPhaseAngle = np.pi * (2 * curPhase - 1)
+            
+            if method=='kernel_regression':
+                
+                # generate frame by rbf interpolation
+                w = gauss_kernel(self.ts_instaphase_, curPhaseAngle, sigmaGKR).T
+                imCurFrame = np.reshape(np.dot(w / w.sum(), X), imInput.shape[:2])
+                
+            elif method=='optical_flow':    
+            
+                # generate frame using optical flow
+                
+                
+            else:
+                raise ValueError('Invalid method - %s' % method)
 
             # add to video
             if fid == 0:
@@ -333,7 +348,8 @@ class USGatingAndSuperResolution(object):
 
     
     def generateVideo(self, numOutFrames, phaseRange,
-                      sigmaGKRFactor=2, imInput=np.array([])):
+                      imInput=np.array([]),
+                      method='kernel_regression', **params):
 
         # validate phase argument
         if not (len(phaseRange) == 2 and
@@ -345,13 +361,14 @@ class USGatingAndSuperResolution(object):
         phaseVals = np.linspace(phaseRange[0], phaseRange[1], numOutFrames)
         
         return self.generateFramesFromPhaseValues(phaseVals,
-                                                  imInput = imInput,
-                                                  sigmaGKRFactor=sigmaGKRFactor)
+                                                  imInput=imInput,
+                                                  method=method, **params)
 
-    def generateSinglePeriodVideo(self, numOutFrames,
-                                  sigmaGKRFactor=2, imInput=np.array([])):
+    def generateSinglePeriodVideo(self, numOutFrames, 
+                                  imInput=np.array([]),
+                                  method='kernel_regression', **params):
         
         phaseRange = [0, 1]
         return self.generateVideo(numOutFrames, phaseRange,
-                                  sigmaGKRFactor=sigmaGKRFactor,
-                                  imInput=imInput)
+                                  imInput=imInput,
+                                  method=method, **params)
