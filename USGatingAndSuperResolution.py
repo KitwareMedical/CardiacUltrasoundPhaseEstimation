@@ -15,12 +15,30 @@ def normalizeAngles(angleList, angle_range):
     return np.array([angles.normalize(i, angle_range[0], angle_range[1])
                      for i in angleList])
 
+def config_framegen_using_kernel_regression(sigmaGKRFactor = 2):
 
+    return {'name': 'kernel_regression',
+            'sigmaGKRFactor': sigmaGKRFactor}
+
+def config_framegen_using_optical_flow(pyr_scale=0.5, levels=3, 
+                                       winsizeFactor=0.5, iterations=3, 
+                                       poly_n=7, poly_sigma=1.5,
+                                       flags=0):
+
+    return {'name': 'optical_flow',
+            'pyr_scale': 0.5,
+            'levels': 3,
+            'winsizeFactor': winsizeFactor,                
+            'iterations': 3,
+            'poly_n': 7,
+            'poly_sigma': 1.5,
+            'flags': 0}
+    
 class USGatingAndSuperResolution(object):
 
     def __init__(self, 
                  # noise suppression parameters
-                 medianFilterSize=3, xyDownsamplingFactor=1, gammaFactor=1,
+                 medianFilterSize=3, xyDownsamplingFactor=1, gammaFactor=1, lrconvtol=1e-05,
                  # phase estimation parameters
                  similarityMethod='PCA', pca_n_components=0.99,
                  lowessFrac=0.3, detrend_mode='/'
@@ -29,6 +47,7 @@ class USGatingAndSuperResolution(object):
         # noise suppression parameters
         self.medianFilterSize = medianFilterSize
         self.gammaFactor = gammaFactor
+        self.lrconvtol = lrconvtol
         
         if not (xyDownsamplingFactor > 0 and xyDownsamplingFactor <= 1.0):
             raise ValueError('xyDownsamplingFactor should in (0, 1]')
@@ -73,7 +92,7 @@ class USGatingAndSuperResolution(object):
 
         gamma = self.gammaFactor / np.sqrt(np.max(D.shape))
 
-        res = core.ialm.recover(D, gamma)
+        res = core.ialm.recover(D, gamma, tol=self.lrconvtol)
 
         D_lowRank = np.array( res[0] )
         D_sparse = np.array( res[1] )
@@ -250,7 +269,7 @@ class USGatingAndSuperResolution(object):
     
     def setInput(self, imInput):
         
-        self._imInput = imInput
+        self.imInput_ = imInput
         
         
     def process(self):
@@ -262,7 +281,7 @@ class USGatingAndSuperResolution(object):
         
         tDenoising = time.time()
         
-        self._denoise(self._imInput)
+        self._denoise(self.imInput_)
         
         print '\nNoise suppression took a total of %.2f seconds' % (time.time() - tDenoising)
         
@@ -278,11 +297,9 @@ class USGatingAndSuperResolution(object):
         # Done processing
         print '\n>> Done processing ... took a total of %.2f seconds' % (time.time() - tProcessing)
         
-        
     def generateFramesFromPhaseValues(self, phaseVals,
-                                      imInput=np.array([]),
-                                      method='kernel_regression', **params):
-
+                                      imInput=None, method=None):                                      
+ 
         # validate phase vals
         phaseVals = np.array(phaseVals)
         
@@ -290,53 +307,93 @@ class USGatingAndSuperResolution(object):
             raise ValueError('Invalid phase values')
 
         # set imInput
-        if imInput.size == 0:
+        if imInput is None:
             imInput = self.imInput_
-
-        # compute sigmaGKR 
-        sigmaGKR = sigmaGKRFactor * np.mean(np.abs(np.diff(np.sort(self.ts_instaphase_))))
-        print 'sigmaGKR = ', sigmaGKR
-            
-        # define gaussian
-        def gauss_kernel(x, mu, sigma):
-            r = (normalizeAngles(x - mu, [-np.pi, np.pi]))
-            return np.exp(-r**2 / (2.0 * sigma**2))
 
         # generate frames
         imOutputVideo = []
         
         numOutFrames = len(phaseVals)
         
-        if method=='kernel_regression':   
+        if method['name']=='kernel_regression':   
+            
+            # compute sigmaGKR 
+            sigmaGKRFactor = method['sigmaGKRFactor']
+            sigmaGKR = sigmaGKRFactor * np.mean(np.abs(np.diff(np.sort(self.ts_instaphase_))))
+            #sigmaGKR = sigmaGKRFactor * np.mean(np.abs(np.diff(np.sort(self.ts_instaphase_nmzd_))))
+            print 'sigmaGKR = ', sigmaGKR
+            
+            # define gaussian
+            def gauss_kernel(x, mu, sigma):
+                r = (normalizeAngles(x - mu, [-np.pi, np.pi]))
+                #r = (x - mu) % 1
+                return np.exp(-r**2 / (2.0 * sigma**2))            
+            
             X = np.reshape(imInput, (np.prod(imInput.shape[:2]), imInput.shape[2])).T
         
-        if method=='optical_flow':
+        if method['name']=='optical_flow':
             
+            winsize = np.max(np.ceil(method['winsizeFactor'] *
+                                     np.array(imInput.shape[:2]))).astype('int')
+            
+            def warp_flow(img, flow):
+                h, w = flow.shape[:2]
+                flow = -flow
+                flow[:,:,0] += np.arange(w)
+                flow[:,:,1] += np.arange(h)[:,np.newaxis]
+                res = cv2.remap(img, flow, None, cv2.INTER_LINEAR)
+                return res  
+            
+        prevPercent = 0
         
         for fid in range(numOutFrames):
 
             curPhase = phaseVals[fid]
             curPhaseAngle = np.pi * (2 * curPhase - 1)
             
-            if method=='kernel_regression':
+            if method['name']=='kernel_regression':
                 
                 # generate frame by rbf interpolation
                 w = gauss_kernel(self.ts_instaphase_, curPhaseAngle, sigmaGKR).T
+                #w = gauss_kernel(self.ts_instaphase_nmzd_, curPhase, sigmaGKR).T
                 imCurFrame = np.reshape(np.dot(w / w.sum(), X), imInput.shape[:2])
                 
-            elif method=='optical_flow':    
+            elif method['name']=='optical_flow':    
             
                 # generate frame using optical flow
+                prevPhaseInd = np.argmin((curPhase - self.ts_instaphase_nmzd_) % 1)
+                prevPhase = self.ts_instaphase_nmzd_[prevPhaseInd]
                 
+                nextPhaseInd = np.argmin((self.ts_instaphase_nmzd_ - curPhase) % 1)
+                nextPhase = self.ts_instaphase_nmzd_[nextPhaseInd]                
+                
+                prevPhaseDiff = (curPhase - prevPhase) % 1
+                nextPhaseDiff = (nextPhase - curPhase) % 1
+                prevnextPhaseDiff = nextPhaseDiff + prevPhaseDiff
+                
+                imPrevFrame = imInput[:, :, prevPhaseInd]
+                imNextFrame = imInput[:, :, nextPhaseInd]
+                
+                flow = cv2.calcOpticalFlowFarneback(imPrevFrame, imNextFrame,
+                                                    method['pyr_scale'], method['levels'],
+                                                    winsize, method['iterations'],
+                                                    method['poly_n'], method['poly_sigma'],
+                                                    method['flags'])
+                
+                imWarpedPrevFrame = warp_flow(imPrevFrame,
+                                              flow * prevPhaseDiff / prevnextPhaseDiff)
+                imWarpedNextFrame = warp_flow(imNextFrame,
+                                              flow * -nextPhaseDiff / prevnextPhaseDiff)
+                imCurFrame = 0.5 * (imWarpedPrevFrame + imWarpedNextFrame)
                 
             else:
-                raise ValueError('Invalid method - %s' % method)
+                raise ValueError('Invalid method - %s' % method['name'])
 
             # add to video
             if fid == 0:
-                imOnePeriodVideo = imCurFrame
+                imOutputVideo = imCurFrame
             else:
-                imOnePeriodVideo = np.dstack((imOutputVideo, imCurFrame))
+                imOutputVideo = np.dstack((imOutputVideo, imCurFrame))
 
             # update progress
             curPercent = np.floor(100.0*fid/numOutFrames)
@@ -348,9 +405,8 @@ class USGatingAndSuperResolution(object):
 
     
     def generateVideo(self, numOutFrames, phaseRange,
-                      imInput=np.array([]),
-                      method='kernel_regression', **params):
-
+                      imInput=None, method=None):                                                    
+                      
         # validate phase argument
         if not (len(phaseRange) == 2 and
                 np.all(phaseRange >= 0) and np.all(phaseRange <= 1) and
@@ -361,14 +417,11 @@ class USGatingAndSuperResolution(object):
         phaseVals = np.linspace(phaseRange[0], phaseRange[1], numOutFrames)
         
         return self.generateFramesFromPhaseValues(phaseVals,
-                                                  imInput=imInput,
-                                                  method=method, **params)
+                                                  imInput=imInput, method=method)
 
     def generateSinglePeriodVideo(self, numOutFrames, 
-                                  imInput=np.array([]),
-                                  method='kernel_regression', **params):
+                                  imInput=None, method=None):
         
-        phaseRange = [0, 1]
+        phaseRange = np.array([0, 1])
         return self.generateVideo(numOutFrames, phaseRange,
-                                  imInput=imInput,
-                                  method=method, **params)
+                                  imInput=imInput, method=method)
