@@ -15,6 +15,34 @@ def normalizeAngles(angleList, angle_range):
     return np.array([angles.normalize(i, angle_range[0], angle_range[1])
                      for i in angleList])
 
+def phaseDist(p1, p2, maxPhase=1.0):
+    modDiff = np.abs(p2 - p1) % maxPhase
+    if modDiff > 0.5 * maxPhase:
+        return (maxPhase - modDiff)
+    else:
+        return modDiff
+    
+def phaseDiff(phaseArr, maxPhase=1.0):
+    pdiff = (np.abs(np.diff(phaseArr))) % maxPhase
+    for i in range(len(pdiff)):
+        if pdiff[i] > 0.5 * maxPhase:
+            pdiff[i] = maxPhase - pdiff[i]
+    return pdiff    
+    
+def compute_conseq_frame_rmse(imInput):
+    
+    mean_rmse = 0.0
+    
+    for i in range(imInput.shape[2]-1):
+        imCurFrame = imInput[:, :, i]
+        imNextFrame = imInput[:, :, i+1]
+        rmse = np.sqrt(np.mean((imNextFrame.flatten() - imCurFrame.flatten())**2))
+        mean_rmse += rmse
+    
+    mean_rmse /= (imInput.shape[2] - 1)
+    
+    return rmse
+
 def config_framegen_using_kernel_regression(sigmaGKRFactor = 2):
 
     return {'name': 'kernel_regression',
@@ -319,14 +347,16 @@ class USGatingAndSuperResolution(object):
             
             # compute sigmaGKR 
             sigmaGKRFactor = method['sigmaGKRFactor']
-            sigmaGKR = sigmaGKRFactor * np.mean(np.abs(np.diff(np.sort(self.ts_instaphase_))))
+            #sigmaGKR = sigmaGKRFactor * np.mean(np.abs(np.diff(np.sort(self.ts_instaphase_))))
             #sigmaGKR = sigmaGKRFactor * np.mean(np.abs(np.diff(np.sort(self.ts_instaphase_nmzd_))))
+            sigmaGKR = sigmaGKRFactor * np.mean(phaseDiff(np.sort(self.ts_instaphase_nmzd_)))
             print 'sigmaGKR = ', sigmaGKR
             
             # define gaussian
             def gauss_kernel(x, mu, sigma):
-                r = (normalizeAngles(x - mu, [-np.pi, np.pi]))
+                #r = (normalizeAngles(x - mu, [-np.pi, np.pi]))
                 #r = (x - mu) % 1
+                r = phaseDist(mu, x)
                 return np.exp(-r**2 / (2.0 * sigma**2))            
             
             X = np.reshape(imInput, (np.prod(imInput.shape[:2]), imInput.shape[2])).T
@@ -354,8 +384,8 @@ class USGatingAndSuperResolution(object):
             if method['name']=='kernel_regression':
                 
                 # generate frame by rbf interpolation
-                w = gauss_kernel(self.ts_instaphase_, curPhaseAngle, sigmaGKR).T
-                #w = gauss_kernel(self.ts_instaphase_nmzd_, curPhase, sigmaGKR).T
+                #w = gauss_kernel(self.ts_instaphase_, curPhaseAngle, sigmaGKR).T
+                w = gauss_kernel(self.ts_instaphase_nmzd_, curPhase, sigmaGKR).T
                 imCurFrame = np.reshape(np.dot(w / w.sum(), X), imInput.shape[:2])
                 
             elif method['name']=='optical_flow':    
