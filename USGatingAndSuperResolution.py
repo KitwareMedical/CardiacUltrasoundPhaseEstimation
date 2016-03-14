@@ -16,18 +16,27 @@ def normalizeAngles(angleList, angle_range):
                      for i in angleList])
 
 def phaseDist(p1, p2, maxPhase=1.0):
+    
+    flagScalarInput = False
+    
+    if np.isscalar(p1):
+        flagScalarInput = True
+        p1 = np.array(p1)
+        p2 = np.array(p2)
+    
     modDiff = np.abs(p2 - p1) % maxPhase
-    if modDiff > 0.5 * maxPhase:
-        return (maxPhase - modDiff)
+    
+    flagDiffGTMid = modDiff > 0.5 * maxPhase
+    modDiff[flagDiffGTMid] = maxPhase - modDiff[flagDiffGTMid]
+    
+    if flagScalarInput:
+        return np.asscalar(modDiff)
     else:
         return modDiff
     
 def phaseDiff(phaseArr, maxPhase=1.0):
-    pdiff = (np.abs(np.diff(phaseArr))) % maxPhase
-    for i in range(len(pdiff)):
-        if pdiff[i] > 0.5 * maxPhase:
-            pdiff[i] = maxPhase - pdiff[i]
-    return pdiff    
+    n = len(phaseArr)
+    return phaseDist(phaseArr[:n-1], phaseArr[1:])
     
 def compute_conseq_frame_rmse(imInput):
     
