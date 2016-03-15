@@ -19,7 +19,7 @@ def phaseDist(p1, p2, maxPhase=1.0):
     
     flagScalarInput = False
     
-    if np.isscalar(p1):
+    if np.isscalar(p1) and np.isscalar(p2):
         flagScalarInput = True
         p1 = np.array(p1)
         p2 = np.array(p2)
@@ -57,7 +57,7 @@ def config_framegen_using_kernel_regression(sigmaGKRFactor = 2):
     return {'name': 'kernel_regression',
             'sigmaGKRFactor': sigmaGKRFactor}
 
-def config_framegen_using_optical_flow(pyr_scale=0.5, levels=3, 
+def config_framegen_using_optical_flow(pyr_scale=0.5, levels=4, 
                                        winsizeFactor=0.5, iterations=3, 
                                        poly_n=7, poly_sigma=1.5,
                                        flags=0):
@@ -352,6 +352,9 @@ class USGatingAndSuperResolution(object):
         
         numOutFrames = len(phaseVals)
         
+        if method is None:
+            method = config_framegen_using_kernel_regression()
+            
         if method['name']=='kernel_regression':   
             
             # compute sigmaGKR 
@@ -406,8 +409,8 @@ class USGatingAndSuperResolution(object):
                 nextPhaseInd = np.argmin((self.ts_instaphase_nmzd_ - curPhase) % 1)
                 nextPhase = self.ts_instaphase_nmzd_[nextPhaseInd]                
                 
-                prevPhaseDiff = (curPhase - prevPhase) % 1
-                nextPhaseDiff = (nextPhase - curPhase) % 1
+                prevPhaseDiff = phaseDist(prevPhase, curPhase)
+                nextPhaseDiff = phaseDist(curPhase, nextPhase)
                 prevnextPhaseDiff = nextPhaseDiff + prevPhaseDiff
                 
                 imPrevFrame = imInput[:, :, prevPhaseInd]
