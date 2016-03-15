@@ -24,7 +24,7 @@ def phaseDist(p1, p2, maxPhase=1.0):
         p1 = np.array(p1)
         p2 = np.array(p2)
     
-    modDiff = np.abs(p2 - p1) % maxPhase
+    modDiff = np.array(np.abs(p2 - p1) % maxPhase)
     
     flagDiffGTMid = modDiff > 0.5 * maxPhase
     modDiff[flagDiffGTMid] = maxPhase - modDiff[flagDiffGTMid]
@@ -38,7 +38,14 @@ def phaseDiff(phaseArr, maxPhase=1.0):
     n = len(phaseArr)
     return phaseDist(phaseArr[:n-1], phaseArr[1:])
     
-def compute_conseq_frame_rmse(imInput):
+def ncorr(imA, imB):
+    
+    imA = (imA - imA.mean()) / imA.std()
+    imB = (imB - imB.mean()) / imB.std()
+    
+    return np.mean(imA * imB)    
+
+def compute_mean_consec_frame_rmse(imInput):
     
     mean_rmse = 0.0
     
@@ -51,6 +58,19 @@ def compute_conseq_frame_rmse(imInput):
     mean_rmse /= (imInput.shape[2] - 1)
     
     return rmse
+
+def compute_mean_consec_frame_ncorr(imInput):
+    
+    mean_ncorr = 0.0
+    
+    for i in range(imInput.shape[2]-1):
+        imCurFrame = imInput[:, :, i]
+        imNextFrame = imInput[:, :, i+1]
+        mean_ncorr += ncorr(imCurFrame, imNextFrame)
+    
+    mean_ncorr /= (imInput.shape[2] - 1)
+    
+    return mean_ncorr
 
 def config_framegen_using_kernel_regression(sigmaGKRFactor = 2):
 
@@ -311,7 +331,9 @@ class USGatingAndSuperResolution(object):
         
     def process(self):
 
-        tProcessing = time.time()
+        tProcessing = time.time()        
+        
+        print 'Input video size: ', self.imInput_.shape
         
         # Step-1: Suppress noise using low-rank plus sparse decomposition
         print '\n>> Step-1: Suppressing noise using low-rank plus sparse decomposition ...\n'
