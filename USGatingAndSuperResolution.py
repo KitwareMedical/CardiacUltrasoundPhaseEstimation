@@ -6,6 +6,9 @@ import sklearn.decomposition
 import statsmodels.api as sm
 import angles
 import cv2
+import SimpleITK as sitk
+import registration_utilities as ru
+import registration_callbacks as rc
 
 sys.path.insert(0, 'pyLAR')
 import core.ialm
@@ -34,10 +37,12 @@ def phaseDist(p1, p2, maxPhase=1.0):
     else:
         return modDiff
     
+
 def phaseDiff(phaseArr, maxPhase=1.0):
     n = len(phaseArr)
     return phaseDist(phaseArr[:n-1], phaseArr[1:])
     
+
 def ncorr(imA, imB):
     
     imA = (imA - imA.mean()) / imA.std()
@@ -45,6 +50,10 @@ def ncorr(imA, imB):
     
     return np.mean(imA * imB)    
 
+
+def rmse(imA, imB):    
+    return np.sqrt(np.mean((imA - imB)**2)) 
+    
 def compute_mean_consec_frame_rmse(imInput):
     
     mean_rmse = 0.0
@@ -72,10 +81,17 @@ def compute_mean_consec_frame_ncorr(imInput):
     
     return mean_ncorr
 
+def config_framegen_using_linear_interpolation():
+
+    return {'name': 'linear_interpolation',
+            'params': {}
+           }
+
 def config_framegen_using_kernel_regression(sigmaGKRFactor = 2):
 
     return {'name': 'kernel_regression',
-            'sigmaGKRFactor': sigmaGKRFactor}
+            'params': {'sigmaGKRFactor': sigmaGKRFactor}
+           }
 
 def config_framegen_using_optical_flow(pyr_scale=0.5, levels=4, 
                                        winsizeFactor=0.5, iterations=3, 
@@ -83,14 +99,193 @@ def config_framegen_using_optical_flow(pyr_scale=0.5, levels=4,
                                        flags=0):
 
     return {'name': 'optical_flow',
-            'pyr_scale': 0.5,
-            'levels': 3,
-            'winsizeFactor': winsizeFactor,                
-            'iterations': 3,
-            'poly_n': 7,
-            'poly_sigma': 1.5,
-            'flags': 0}
+            'params': 
+                {
+                 'pyr_scale': pyr_scale,
+                 'levels': levels,
+                 'winsizeFactor': winsizeFactor,                
+                 'iterations': iterations,
+                 'poly_n': poly_n,
+                 'poly_sigma': poly_sigma,
+                 'flags': flags
+                }
+            }
+
+def frame_gen_optical_flow(im1, im2, alpha,
+                           pyr_scale=0.5, levels=4, 
+                           winsizeFactor=0.5, iterations=3, 
+                           poly_n=7, poly_sigma=1.5,
+                           flags=0):
     
+    def warp_flow(img, flow):
+        h, w = flow.shape[:2]
+        flow = -flow
+        flow[:,:,0] += np.arange(w)
+        flow[:,:,1] += np.arange(h)[:,np.newaxis]
+        res = cv2.remap(img, flow, None, cv2.INTER_LINEAR, borderValue=np.median(img[:, 0]))
+        return res  
+
+    winsize = np.max(np.ceil(winsizeFactor * np.array(im1.shape[:2]))).astype('int')  
+    
+    flowPrev = cv2.calcOpticalFlowFarneback(im1, im2, pyr_scale, levels, winsize, iterations, poly_n, poly_sigma, flags)
+    
+    flowNext = cv2.calcOpticalFlowFarneback(im2, im1, pyr_scale, levels, winsize, iterations, poly_n, poly_sigma, flags)
+ 
+    imWarp1 = warp_flow(im1, flow1 * alpha)
+                                  
+    imWarp2 = warp_flow(im2, flow2 * (1 - alpha))
+    
+    imResult = 0.5 * (imWarp1 + imWarp2)
+    
+    return imResult
+
+def config_framegen_using_bspline_registration(gridSpacingFactor=0.15, gradConvTol=1e-4, 
+                                               affineIter=50, bsplineIter=50):
+    
+    return {'name': 'bspline_registration',
+            'params': 
+                {
+                 'gridSpacingFactor': gridSpacingFactor, 
+                 'gradConvTol': gradConvTol, 
+                 'affineIter': affineIter,
+                 'bsplineIter': bsplineIter
+                }
+            }
+
+def frame_gen_bspline_registration(im1, im2, alpha, 
+                      gridSpacingFactor=0.15, gradConvTol=1e-4, 
+                      affineIter=50, bsplineIter=50, debug=False):
+    
+    moving_image = sitk.GetImageFromArray(im1.astype('float'))
+    fixed_image = sitk.GetImageFromArray(im2.astype('float'))
+    
+    #
+    # affine registration
+    #
+    if debug:
+        print '>>> Performing affine registration ...'
+    
+    affineReg = sitk.ImageRegistrationMethod()
+    
+    # metric
+    affineReg.SetMetricAsMeanSquares()
+    affineReg.SetMetricSamplingStrategy(affineReg.RANDOM)
+    affineReg.SetMetricSamplingPercentage(0.01)
+    
+    # interpolator
+    affineReg.SetInterpolator(sitk.sitkLinear)
+    
+    # transform
+    initial_transform = sitk.CenteredTransformInitializer(fixed_image, moving_image, 
+                                                          sitk.Similarity2DTransform(), 
+                                                          sitk.CenteredTransformInitializerFilter.GEOMETRY)
+    
+    affineReg.SetInitialTransform(initial_transform)
+    
+    # optimizer
+    #affineReg.SetOptimizerAsGradientDescent(learningRate=1.0, numberOfIterations=50, estimateLearningRate=affineReg.Once)   
+    affineReg.SetOptimizerAsLBFGSB(gradientConvergenceTolerance=gradConvTol, maximumNumberOfIterations=affineIter)
+    affineReg.SetOptimizerScalesFromPhysicalShift()
+    
+    # multi-resolution setup
+    affineReg.SetShrinkFactorsPerLevel(shrinkFactors = [4,2,1])
+    affineReg.SetSmoothingSigmasPerLevel(smoothingSigmas = [2,1,0])
+    affineReg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
+   
+    # connect all of the observers so that we can perform plotting during registration
+    if debug:
+        affineReg.AddCommand(sitk.sitkStartEvent, rc.metric_start_plot)
+        affineReg.AddCommand(sitk.sitkEndEvent, rc.metric_end_plot)
+        affineReg.AddCommand(sitk.sitkMultiResolutionIterationEvent, rc.metric_update_multires_iterations) 
+        affineReg.AddCommand(sitk.sitkIterationEvent, lambda: rc.metric_plot_values(affineReg))
+    
+    # Execute
+    affine_transform = affineReg.Execute(fixed_image, moving_image)
+    
+    if debug:
+        print('Final metric value for affine registration: {0}'.format(affineReg.GetMetricValue()))
+        print('Optimizer\'s stopping condition, {0}'.format(affineReg.GetOptimizerStopConditionDescription()))
+
+    #
+    # Bspline registration
+    #
+    if debug:
+        print '>>> Performing bspline registration ...'
+    
+    bsplineReg = sitk.ImageRegistrationMethod()
+    
+    # metric
+    bsplineReg.SetMetricAsMeanSquares()
+    bsplineReg.SetMetricSamplingStrategy(affineReg.RANDOM)
+    bsplineReg.SetMetricSamplingPercentage(0.01)
+    
+    # interpolator
+    bsplineReg.SetInterpolator(sitk.sitkLinear)
+    
+    # initial transform
+    bsplineReg.SetMovingInitialTransform(affine_transform)
+    mesh_size = [int(gridSpacingFactor * sz) for sz in fixed_image.GetSize()]
+    if debug:
+        print mesh_size
+    initial_transform = sitk.BSplineTransformInitializer(fixed_image, mesh_size, order=3)
+      
+    bsplineReg.SetInitialTransform(initial_transform)
+    
+    # optimizer
+    #bsplineReg.SetOptimizerAsGradientDescent(learningRate=1.0, numberOfIterations=100, estimateLearningRate=bsplineReg.Once)   
+    bsplineReg.SetOptimizerAsLBFGSB(gradientConvergenceTolerance=gradConvTol, maximumNumberOfIterations=bsplineIter)
+    bsplineReg.SetOptimizerScalesFromPhysicalShift()
+    
+    # multi-resolution setup
+    bsplineReg.SetShrinkFactorsPerLevel(shrinkFactors = [4,2,1])
+    bsplineReg.SetSmoothingSigmasPerLevel(smoothingSigmas = [2,1,0])
+    bsplineReg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
+   
+    # connect all of the observers so that we can perform plotting during registration
+    if debug:
+        bsplineReg.AddCommand(sitk.sitkStartEvent, rc.metric_start_plot)
+        bsplineReg.AddCommand(sitk.sitkEndEvent, rc.metric_end_plot)
+        bsplineReg.AddCommand(sitk.sitkMultiResolutionIterationEvent, rc.metric_update_multires_iterations) 
+        bsplineReg.AddCommand(sitk.sitkIterationEvent, lambda: rc.metric_plot_values(bsplineReg))
+    
+    # Execute
+    bspline_transform = bsplineReg.Execute(fixed_image, moving_image)
+    
+    if debug:
+        print('Final metric value: {0}'.format(bsplineReg.GetMetricValue()))
+        print('Optimizer\'s stopping condition, {0}'.format(bsplineReg.GetOptimizerStopConditionDescription()))
+    
+    # compose affine and bspline transform
+    final_transform = sitk.Transform(bspline_transform)
+    final_transform.AddTransform(affine_transform)
+    
+    # convert to displacement field image
+    disp_field_converter = sitk.TransformToDisplacementFieldFilter()
+    disp_field_converter.SetReferenceImage(fixed_image)
+    
+    disp_field_image = disp_field_converter.Execute(final_transform)
+    
+    # module displacement field image
+    disp_field_image_fwd = sitk.GetImageFromArray(alpha * sitk.GetArrayFromImage(disp_field_image), isVector=True)
+    disp_field_image_bck = sitk.GetImageFromArray((1 - alpha) * sitk.GetArrayFromImage(disp_field_image), isVector=True)
+    
+    # transform moving image
+    defaultVal = np.double(np.median(im1[:, 0]))
+    
+    final_transform_fwd = sitk.DisplacementFieldTransform(disp_field_image_fwd)
+    moving_resampled = sitk.Resample(moving_image, fixed_image, final_transform_fwd,
+                                     sitk.sitkLinear, defaultVal, fixed_image.GetPixelIDValue())    
+
+    # transform fixed image
+    defaultVal = np.double(np.median(im2[:, 0]))
+    final_transform_bck = sitk.DisplacementFieldTransform(disp_field_image_bck)
+    fixed_resampled = sitk.Resample(fixed_image, fixed_image, final_transform_bck,
+                                    sitk.sitkLinear, defaultVal, fixed_image.GetPixelIDValue())    
+    
+    imResult = 0.5 * (sitk.GetArrayFromImage(fixed_resampled) + sitk.GetArrayFromImage(moving_resampled))
+    
+    return imResult, final_transform    
+
 class USGatingAndSuperResolution(object):
 
     def __init__(self, 
@@ -375,12 +570,12 @@ class USGatingAndSuperResolution(object):
         numOutFrames = len(phaseVals)
         
         if method is None:
-            method = config_framegen_using_kernel_regression()
+            method = config_framegen_using_bspline_registration()
             
-        if method['name']=='kernel_regression':   
+        if method['name'] == 'kernel_regression':   
             
             # compute sigmaGKR 
-            sigmaGKRFactor = method['sigmaGKRFactor']
+            sigmaGKRFactor = method['params']['sigmaGKRFactor']
             #sigmaGKR = sigmaGKRFactor * np.mean(np.abs(np.diff(np.sort(self.ts_instaphase_))))
             #sigmaGKR = sigmaGKRFactor * np.mean(np.abs(np.diff(np.sort(self.ts_instaphase_nmzd_))))
             sigmaGKR = sigmaGKRFactor * np.mean(phaseDiff(np.sort(self.ts_instaphase_nmzd_)))
@@ -395,19 +590,6 @@ class USGatingAndSuperResolution(object):
             
             X = np.reshape(imInput, (np.prod(imInput.shape[:2]), imInput.shape[2])).T
         
-        if method['name']=='optical_flow':
-            
-            winsize = np.max(np.ceil(method['winsizeFactor'] *
-                                     np.array(imInput.shape[:2]))).astype('int')
-            
-            def warp_flow(img, flow):
-                h, w = flow.shape[:2]
-                flow = -flow
-                flow[:,:,0] += np.arange(w)
-                flow[:,:,1] += np.arange(h)[:,np.newaxis]
-                res = cv2.remap(img, flow, None, cv2.INTER_LINEAR)
-                return res  
-            
         prevPercent = 0
         
         for fid in range(numOutFrames):
@@ -415,14 +597,14 @@ class USGatingAndSuperResolution(object):
             curPhase = phaseVals[fid]
             curPhaseAngle = np.pi * (2 * curPhase - 1)
             
-            if method['name']=='kernel_regression':
+            if method['name'] == 'kernel_regression':
                 
                 # generate frame by rbf interpolation
                 #w = gauss_kernel(self.ts_instaphase_, curPhaseAngle, sigmaGKR).T
                 w = gauss_kernel(self.ts_instaphase_nmzd_, curPhase, sigmaGKR).T
                 imCurFrame = np.reshape(np.dot(w / w.sum(), X), imInput.shape[:2])
                 
-            elif method['name']=='optical_flow':    
+            elif method['name'] in ['optical_flow', 'bspline_registration', 'linear_interpolation']:    
             
                 # generate frame using optical flow
                 prevPhaseInd = np.argmin((curPhase - self.ts_instaphase_nmzd_) % 1)
@@ -431,25 +613,27 @@ class USGatingAndSuperResolution(object):
                 nextPhaseInd = np.argmin((self.ts_instaphase_nmzd_ - curPhase) % 1)
                 nextPhase = self.ts_instaphase_nmzd_[nextPhaseInd]                
                 
-                prevPhaseDiff = phaseDist(prevPhase, curPhase)
-                nextPhaseDiff = phaseDist(curPhase, nextPhase)
-                prevnextPhaseDiff = nextPhaseDiff + prevPhaseDiff
+                prevPhaseDist = phaseDist(prevPhase, curPhase)
+                nextPhaseDist = phaseDist(curPhase, nextPhase)
+                totalPhaseDist = prevPhaseDist + nextPhaseDist
+                
+                alpha = prevPhaseDist / totalPhaseDist
                 
                 imPrevFrame = imInput[:, :, prevPhaseInd]
                 imNextFrame = imInput[:, :, nextPhaseInd]
                 
-                flow = cv2.calcOpticalFlowFarneback(imPrevFrame, imNextFrame,
-                                                    method['pyr_scale'], method['levels'],
-                                                    winsize, method['iterations'],
-                                                    method['poly_n'], method['poly_sigma'],
-                                                    method['flags'])
-                
-                imWarpedPrevFrame = warp_flow(imPrevFrame,
-                                              flow * prevPhaseDiff / prevnextPhaseDiff)
-                imWarpedNextFrame = warp_flow(imNextFrame,
-                                              flow * -nextPhaseDiff / prevnextPhaseDiff)
-                imCurFrame = 0.5 * (imWarpedPrevFrame + imWarpedNextFrame)
-                
+                if method['name'] == 'optical_flow':
+                    
+                    imCurFrame = frame_gen_optical_flow(imPrevFrame, imNextFrame, alpha, **(method['params']))
+                    
+                elif method['name'] == 'bspline_registration':
+                    
+                    imCurFrame, _ = frame_gen_bspline_registration(imPrevFrame, imNextFrame, alpha, **(method['params']))
+                    
+                elif method['name'] == 'linear_interpolation':
+                    
+                    imCurFrame = (1-alpha) * imPrevFrame + alpha * imNextFrame
+
             else:
                 raise ValueError('Invalid method - %s' % method['name'])
 
@@ -465,6 +649,7 @@ class USGatingAndSuperResolution(object):
                 prevPercent = curPercent
                 print '%.2d%%' % curPercent,
         
+        print '\n'
         return imOutputVideo
 
     
