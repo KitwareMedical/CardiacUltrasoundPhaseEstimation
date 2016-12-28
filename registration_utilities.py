@@ -221,3 +221,21 @@ def display_images_with_alpha(image_z, alpha, image1, image2):
     plt.imshow(sitk.GetArrayFromImage(img),cmap=plt.cm.Greys_r);
     plt.axis('off')
     plt.show()
+
+#callback invoked by the interact ipython method for scrolling through the image stacks of
+#the two images (moving and fixed)
+def display_images(fixed_image_z, moving_image_z, fixed_npa, moving_npa):
+    #create a figure with two subplots and the specified size
+    plt.subplots(1,2,figsize=(10,8))
+
+    #draw the fixed image in the first subplot
+    plt.subplot(1,2,1)
+    plt.imshow(fixed_npa[fixed_image_z,:,:],cmap=plt.cm.Greys_r);
+    plt.title('fixed image')
+    plt.axis('off')
+
+    #draw the moving image in the second subplot
+    plt.subplot(1,2,2)
+    plt.imshow(moving_npa[moving_image_z,:,:],cmap=plt.cm.Greys_r);
+    plt.title('moving image')
+    plt.axis('off')
