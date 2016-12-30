@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<executable>
+  <category>Vevo 2100 RAW File Decoders</category>
+  <title>DecodeVevoPhysio</title>
+  <description>Decodes raw.bmode file from Visualsonics Vevo 2100 scanner and generates a volume file format supported by ITK a and a .csv file with information for each frame</description>
+  <version>0.1.0.$Revision$(alpha)</version>
+  <license>Apache 2.0</license>
+  <contributor>Deepak Roy Chittajallu (Kitware)</contributor>
+  <acknowledgements>This work is part of the TubeTK project at Kitware</acknowledgements>
+  <parameters>
+    <label>Input/output parameters</label>
+    <description>Input/output parameters</description>
+    <file fileExtensions=".raw.bmode">
+      <name>in_raw_bmode_file</name>
+      <description>Input raw.physio file</description>
+      <label>Input raw.physio file</label>
+      <channel>input</channel>
+      <index>0</index>
+    </file>    
+    <file fileExtensions=".xml">
+      <name>xml_parameter_file</name>
+      <label>XML param file</label>
+      <description>XML file containing the acquisition parameters</description>
+      <channel>input</channel>
+      <index>1</index>
+    </file>
+    <image>
+      <name>out_bmode_file</name>
+      <description>Output b-mode video file</description>
+      <label>Output b-mode file</label>
+      <channel>output</channel>
+      <index>2</index>
+    </image>
+  </parameters>
+</executable>
