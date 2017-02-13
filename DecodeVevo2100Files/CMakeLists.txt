@@ -23,6 +23,7 @@ cmake_minimum_required(VERSION 3.6)
 set(cli_modules
     DecodeRawBmode
     DecodeRawPhysio
+    DecodeVevo2100Files
 )
 
 foreach(module IN LISTS cli_modules)

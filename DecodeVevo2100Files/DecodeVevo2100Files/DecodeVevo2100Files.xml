@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<executable>
+  <category>Vevo 2100 RAW File Decoders</category>
+  <title>DecodeVevoPhysio</title>
+  <description>Decodes .raw.bmode, .raw.physio and .raw.xml files from Visualsonics Vevo 2100 scanner.</description>
+  <version>0.1.0.$Revision$(alpha)</version>
+  <license>Apache 2.0</license>
+  <contributor>Deepak Roy Chittajallu (Kitware)</contributor>
+  <acknowledgements>This work is part of the TubeTK project at Kitware</acknowledgements>
+  <parameters>
+    <label>Input/output parameters</label>
+    <description>Input/output parameters</description>
+    <file fileExtensions=".raw.bmode">
+      <name>in_raw_bmode_file</name>
+      <description>Input raw.physio file</description>
+      <label>Input raw.physio file</label>
+      <channel>input</channel>
+      <index>0</index>
+    </file>    
+    <file fileExtensions=".raw.physio">
+      <name>in_raw_physio_file</name>
+      <description>Input raw.physio file</description>
+      <label>Input raw.physio file</label>
+      <channel>input</channel>
+      <index>1</index>
+    </file>
+    <file fileExtensions=".xml">
+      <name>xml_parameter_file</name>
+      <label>XML param file</label>
+      <description>XML file containing the acquisition parameters</description>
+      <channel>input</channel>
+      <index>2</index>
+    </file>
+    <image>
+      <name>out_bmode_file</name>
+      <description>Output volume containing the b-mode video</description>
+      <label>Output b-mode file</label>
+      <channel>output</channel>
+      <index>3</index>
+    </image>
+    <file fileExtensions=".csv">
+      <name>out_bmode_csv_file</name>
+      <description>Output b-mode csv file containing physiological measurments for each b-mode frame</description>
+      <label>Output bmode csv file</label>
+      <channel>output</channel>
+      <index>4</index>
+    </file>
+    <file fileExtensions=".csv">
+      <name>out_physio_csv_file</name>
+      <description>Output physio csv file containing physiological measurements with time stamps</description>
+      <label>Output physio csv file</label>
+      <channel>output</channel>
+      <index>5</index>
+    </file>
+  </parameters>
+</executable>

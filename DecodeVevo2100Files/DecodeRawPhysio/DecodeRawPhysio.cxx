@@ -26,25 +26,36 @@
 // command-line arguments
 #include "DecodeRawPhysioCLP.h"
 
+#define BIG_TO_LITTLE_ENDIAN_32(x) ((((x) & 0xFF000000) >> 24) | \
+                                    (((x) & 0x00FF0000) >> 8) |  \
+                                    (((x) & 0x0000FF00) << 8) |  \
+                                    (((x) & 0x000000FF) << 24) ) 
+
+
+// Define data structures
+#pragma pack(1)  // This ensures your compiler does not pad the following structures
+
 typedef struct
 {
-  unsigned int dwVersion;
-  unsigned int dwNumFrames;
-  unsigned int dwInfo;
+  unsigned int dwVersion;         // Version of this file header
+  unsigned int dwNumFrames;       // Number of frames in this file
+  unsigned int dwInfo;            // General info regarding this packet (bitfield)
   unsigned int dwReserved[7];
 
 } VSI_RAW_FILE_HEADER;
 
 typedef struct
 {
-  unsigned int dwTimeStamp;
-  double       dbTimeStamp;
-  unsigned int dwFrameNumber;
-  unsigned int dwInfo;
-  unsigned int dwPacketSize;
+  unsigned int dwTimeStamp;       // RAW hardware time stamp
+  double       dbTimeStamp;       // Calculated time stamp in ms
+  unsigned int dwFrameNumber;     // RAW frame number for this packet
+  unsigned int dwInfo;            // General info regarding this packet (bitfield)
+  unsigned int dwPacketSize;      // Size of packet excluding this header (data follows header)
   unsigned int dwReserved[8];
   
 } VSI_RAW_FRAME_HEADER; 
+
+#pragma pack()
 
 using namespace std;
 
@@ -74,36 +85,49 @@ int main(int argc, char *argv[])
   // read file header
   VSI_RAW_FILE_HEADER hfile;
 
-  mfread(&hfile.dwVersion, sizeof(hfile.dwVersion), 1, infile);
-  mfread(&hfile.dwNumFrames, sizeof(hfile.dwNumFrames), 1, infile);
-  mfread(&hfile.dwInfo, sizeof(hfile.dwInfo), 1, infile);
-  mfread(&hfile.dwReserved, sizeof(hfile.dwReserved), 1, infile);
+  mfread(&hfile, sizeof(hfile), 1, infile);
 
   cout << "Version = " << hfile.dwVersion << endl;
   cout << "Num Frames = " << hfile.dwNumFrames << endl;
   cout << "Frame type = " << (hfile.dwInfo & 0x00000006) << endl;
 
   // read frames
-  for(unsigned int i = 0; i < hfile.dwNumFrames; i++) {
+  double prevTimeStamp = 0, meanTimeStep = 0;
 
-    cout << "Reading frame " << i << "/" << hfile.dwNumFrames << endl;
+  for(unsigned int f = 0; f < hfile.dwNumFrames; f++) {
+
+    cout << "Reading frame " << f << "/" << hfile.dwNumFrames << endl;
 
     // read frame headers
     VSI_RAW_FRAME_HEADER hframe;
 
-    mfread(&hframe.dwTimeStamp, sizeof(hframe.dwTimeStamp), 1, infile);
-    mfread(&hframe.dbTimeStamp, sizeof(hframe.dbTimeStamp), 1, infile);
-    mfread(&hframe.dwFrameNumber, sizeof(hframe.dwFrameNumber), 1, infile);
-    mfread(&hframe.dwInfo, sizeof(hframe.dwInfo), 1, infile);
-    mfread(&hframe.dwPacketSize, sizeof(hframe.dwPacketSize), 1, infile);
-    mfread(&hframe.dwReserved, sizeof(hframe.dwReserved), 1, infile);
+    mfread(&hframe, sizeof(hframe), 1, infile);
+
+    hframe.dwTimeStamp = BIG_TO_LITTLE_ENDIAN_32(hframe.dwTimeStamp);
 
     bool isFrameInvalid = (hframe.dwInfo & 0x00000001);
 
-    cout << "\tTime stamp = " << hframe.dbTimeStamp << endl;
+    cout << "\tTime stamp (hw) = " << hframe.dwTimeStamp << endl;
+    cout << "\tTime stamp (ms) = " << hframe.dbTimeStamp << endl;
     cout << "\tFrame number = " << hframe.dwFrameNumber << endl;
     cout << "\tFrame data size = " << hframe.dwPacketSize << endl;
     cout << "\tFrame invalid = " << isFrameInvalid << endl;
+
+    if(isFrameInvalid) {
+      cerr << "Error - input file contains invalid frames" << endl;
+      exit(1);
+    }
+
+    if(f > 0) {
+
+      double curTimeStep = hframe.dbTimeStamp - prevTimeStamp;
+      cout << "\tTime step (ms) = " << curTimeStep << endl;
+
+      meanTimeStep += curTimeStep;
+
+    }
+
+    prevTimeStamp = hframe.dbTimeStamp;
 
     // read frame data
     int nSamples = hframe.dwPacketSize / 8;
@@ -120,17 +144,17 @@ int main(int argc, char *argv[])
     mfread(temperature, sizeof(short), nSamples, infile);
     mfread(bp, sizeof(short), nSamples, infile);
 
-    for(unsigned int j = 0; j < nSamples; j++) {
+    for(unsigned int s = 0; s < nSamples; s++) {
 
-      if(i == 0 && j == 0) {
+      if(f == 0 && s == 0) {
         fprintf(outfile, 
-                "Frame, Timestamp, isFrameInvalid, Sample, ECG, Respiration, "
+                "Frame, Timestamp, Sample, ECG, Respiration, "
                 "Temperature, Blood pressure");
       }
 
-      fprintf(outfile, "\n%d, %f, %d, %d, %d, %d, %d, %d", 
-              hframe.dwFrameNumber, hframe.dbTimeStamp, isFrameInvalid, j, 
-              ecg[j], respiration[j], temperature[j], bp[j]); 
+      fprintf(outfile, "\n%d, %f, %d, %d, %d, %d, %d", 
+              hframe.dwFrameNumber, hframe.dbTimeStamp, s, 
+              ecg[s], respiration[s], temperature[s], bp[s]); 
     }
 
     delete(ecg);
@@ -138,6 +162,9 @@ int main(int argc, char *argv[])
     delete(temperature);
     delete(bp);
   }
+
+  cout << "Mean time step = " << meanTimeStep << endl;
+  cout << "Frames per sec = " << 1000.0 / meanTimeStep << endl;
 
   fclose(outfile);
   fclose(infile);
