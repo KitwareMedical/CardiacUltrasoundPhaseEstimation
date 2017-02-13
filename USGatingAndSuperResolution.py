@@ -1,5 +1,6 @@
 import numpy as np
 import scipy.ndimage
+import scipy.interpolate
 import time
 import sys
 import sklearn.decomposition
@@ -9,6 +10,8 @@ import cv2
 import SimpleITK as sitk
 import registration_utilities as ru
 import registration_callbacks as rc
+import skimage.measure
+import medpy.metric.image
 
 from statsmodels.tsa.filters.hp_filter import hpfilter
 from statsmodels.nonparametric.smoothers_lowess import lowess
@@ -22,9 +25,9 @@ def normalizeAngles(angleList, angle_range):
                      for i in angleList])
 
 def phaseDist(p1, p2, maxPhase=1.0):
-    
+
     flagScalarInput = False
-    
+
     if np.isscalar(p1) and np.isscalar(p2):
         flagScalarInput = True
         p1 = np.array(p1)
@@ -39,7 +42,7 @@ def phaseDist(p1, p2, maxPhase=1.0):
         return np.asscalar(modDiff)
     else:
         return modDiff
-    
+
 
 def phaseDiff(phaseArr, maxPhase=1.0):
     n = len(phaseArr)
@@ -54,7 +57,7 @@ def ncorr(imA, imB):
     return np.mean(imA * imB)    
 
 
-def rmse(imA, imB):    
+def rmse(imA, imB):
     return np.sqrt(np.mean((imA - imB)**2)) 
 
 
@@ -94,10 +97,25 @@ def config_framegen_using_linear_interpolation():
            }
 
 
-def config_framegen_using_kernel_regression(sigmaGKRFactor = 2):
+def config_framegen_using_kernel_regression(sigmaPhaseFactor = 0.5,
+                                            sigmaSimilarityFactor=None,
+                                            stochastic=False):
 
-    return {'name': 'kernel_regression',
-            'params': {'sigmaGKRFactor': sigmaGKRFactor}
+    suffix = '_phase'
+
+    if sigmaSimilarityFactor is not None:
+        suffix += '_sim'
+
+    if stochastic:
+        suffix += '_stochastic'
+
+    return {'name': 'kernel_regression' + suffix,
+            'params':
+                {
+                    'sigmaPhaseFactor': sigmaPhaseFactor,
+                    'sigmaSimilarityFactor': sigmaSimilarityFactor,
+                    'stochastic': stochastic
+                }
            }
 
 
@@ -109,13 +127,13 @@ def config_framegen_using_optical_flow(pyr_scale=0.5, levels=4,
     return {'name': 'optical_flow',
             'params': 
                 {
-                 'pyr_scale': pyr_scale,
-                 'levels': levels,
-                 'winsizeFactor': winsizeFactor,                
-                 'iterations': iterations,
-                 'poly_n': poly_n,
-                 'poly_sigma': poly_sigma,
-                 'flags': flags
+                    'pyr_scale': pyr_scale,
+                    'levels': levels,
+                    'winsizeFactor': winsizeFactor,
+                    'iterations': iterations,
+                    'poly_n': poly_n,
+                    'poly_sigma': poly_sigma,
+                    'flags': flags
                 }
             }
 
@@ -131,20 +149,25 @@ def frame_gen_optical_flow(im1, im2, alpha,
         flow = -flow
         flow[:,:,0] += np.arange(w)
         flow[:,:,1] += np.arange(h)[:,np.newaxis]
-        res = cv2.remap(img, flow, None, cv2.INTER_LINEAR, borderValue=np.median(img[:, 0]))
+        res = cv2.remap(img, flow, None, cv2.INTER_LINEAR,
+                        borderValue=np.median(img[:, 0]))
         return res  
 
     winsize = np.max(np.ceil(winsizeFactor * np.array(im1.shape[:2]))).astype('int')  
 
-    flowPrev = cv2.calcOpticalFlowFarneback(im1, im2, pyr_scale, levels, winsize, iterations, poly_n, poly_sigma, flags)
+    flowFwd = cv2.calcOpticalFlowFarneback(im1, im2, pyr_scale, levels,
+                                           winsize, iterations, poly_n,
+                                           poly_sigma, flags)
 
-    flowNext = cv2.calcOpticalFlowFarneback(im2, im1, pyr_scale, levels, winsize, iterations, poly_n, poly_sigma, flags)
+    flowBwd = cv2.calcOpticalFlowFarneback(im2, im1, pyr_scale, levels,
+                                           winsize, iterations, poly_n,
+                                           poly_sigma, flags)
 
-    imWarp1 = warp_flow(im1, flow1 * alpha)
+    imWarpFwd = warp_flow(im1, flowFwd * alpha)
 
-    imWarp2 = warp_flow(im2, flow2 * (1 - alpha))
+    imWarpBwd = warp_flow(im2, flowBwd * (1 - alpha))
 
-    imResult = 0.5 * (imWarp1 + imWarp2)
+    imResult = 0.5 * (imWarpFwd + imWarpBwd)
 
     return imResult
 
@@ -155,10 +178,10 @@ def config_framegen_using_bspline_registration(gridSpacingFactor=0.15, gradConvT
     return {'name': 'bspline_registration',
             'params': 
                 {
-                 'gridSpacingFactor': gridSpacingFactor, 
-                 'gradConvTol': gradConvTol, 
-                 'affineIter': affineIter,
-                 'bsplineIter': bsplineIter
+                    'gridSpacingFactor': gridSpacingFactor,
+                    'gradConvTol': gradConvTol,
+                    'affineIter': affineIter,
+                    'bsplineIter': bsplineIter
                 }
             }
 
@@ -188,7 +211,8 @@ def register_rigid(im_fixed, im_moving, iter=50, debug=False):
 
     # optimizer
     #reg.SetOptimizerAsGradientDescent(learningRate=1.0, numberOfIterations=50, estimateLearningRate=affineReg.Once)
-    reg.SetOptimizerAsLBFGSB(gradientConvergenceTolerance=1e-4, maximumNumberOfIterations=500)
+    reg.SetOptimizerAsLBFGSB(gradientConvergenceTolerance=1e-4,
+                             maximumNumberOfIterations=500)
     reg.SetOptimizerScalesFromPhysicalShift()
 
     # multi-resolution setup
@@ -200,20 +224,25 @@ def register_rigid(im_fixed, im_moving, iter=50, debug=False):
     if debug:
         reg.AddCommand(sitk.sitkStartEvent, rc.metric_start_plot)
         reg.AddCommand(sitk.sitkEndEvent, rc.metric_end_plot)
-        reg.AddCommand(sitk.sitkMultiResolutionIterationEvent, rc.metric_update_multires_iterations)
-        reg.AddCommand(sitk.sitkIterationEvent, lambda: rc.metric_plot_values(reg))
+        reg.AddCommand(sitk.sitkMultiResolutionIterationEvent,
+                       rc.metric_update_multires_iterations)
+        reg.AddCommand(sitk.sitkIterationEvent,
+                       lambda: rc.metric_plot_values(reg))
 
     # Execute
     tfm = reg.Execute(fixed_image, moving_image)
 
     # post reg analysis
     if debug:
-        print('Final metric value for affine registration: {0}'.format(reg.GetMetricValue()))
-        print('Optimizer\'s stopping condition, {0}'.format(reg.GetOptimizerStopConditionDescription()))
+        print('Final metric value for affine registration: {0}'.format(
+            reg.GetMetricValue()))
+        print('Optimizer\'s stopping condition, {0}'.format(
+            reg.GetOptimizerStopConditionDescription()))
 
     # transform moving image
     moving_resampled = sitk.Resample(moving_image, fixed_image, tfm,
-                                     sitk.sitkLinear, np.double(im_fixed.min()), fixed_image.GetPixelIDValue())
+                                     sitk.sitkLinear, np.double(im_fixed.min()),
+                                     fixed_image.GetPixelIDValue())
 
     return sitk.GetArrayFromImage(moving_resampled)
 
@@ -242,15 +271,17 @@ def frame_gen_bspline_registration(im1, im2, alpha,
     affineReg.SetInterpolator(sitk.sitkLinear)
 
     # transform
-    initial_transform = sitk.CenteredTransformInitializer(fixed_image, moving_image, 
-                                                          sitk.Similarity2DTransform(), 
-                                                          sitk.CenteredTransformInitializerFilter.GEOMETRY)
+    initial_transform = sitk.CenteredTransformInitializer(
+        fixed_image, moving_image,
+        sitk.Similarity2DTransform(),
+        sitk.CenteredTransformInitializerFilter.GEOMETRY)
 
     affineReg.SetInitialTransform(initial_transform)
 
     # optimizer
     #affineReg.SetOptimizerAsGradientDescent(learningRate=1.0, numberOfIterations=50, estimateLearningRate=affineReg.Once)   
-    affineReg.SetOptimizerAsLBFGSB(gradientConvergenceTolerance=gradConvTol, maximumNumberOfIterations=affineIter)
+    affineReg.SetOptimizerAsLBFGSB(gradientConvergenceTolerance=gradConvTol,
+                                   maximumNumberOfIterations=affineIter)
     affineReg.SetOptimizerScalesFromPhysicalShift()
 
     # multi-resolution setup
@@ -262,15 +293,19 @@ def frame_gen_bspline_registration(im1, im2, alpha,
     if debug:
         affineReg.AddCommand(sitk.sitkStartEvent, rc.metric_start_plot)
         affineReg.AddCommand(sitk.sitkEndEvent, rc.metric_end_plot)
-        affineReg.AddCommand(sitk.sitkMultiResolutionIterationEvent, rc.metric_update_multires_iterations) 
-        affineReg.AddCommand(sitk.sitkIterationEvent, lambda: rc.metric_plot_values(affineReg))
+        affineReg.AddCommand(sitk.sitkMultiResolutionIterationEvent,
+                             rc.metric_update_multires_iterations)
+        affineReg.AddCommand(sitk.sitkIterationEvent,
+                             lambda: rc.metric_plot_values(affineReg))
 
     # Execute
     affine_transform = affineReg.Execute(fixed_image, moving_image)
 
     if debug:
-        print('Final metric value for affine registration: {0}'.format(affineReg.GetMetricValue()))
-        print('Optimizer\'s stopping condition, {0}'.format(affineReg.GetOptimizerStopConditionDescription()))
+        print('Final metric value for affine registration: {0}'.format(
+            affineReg.GetMetricValue()))
+        print('Optimizer\'s stopping condition, {0}'.format(
+            affineReg.GetOptimizerStopConditionDescription()))
 
     #
     # Bspline registration
@@ -299,7 +334,8 @@ def frame_gen_bspline_registration(im1, im2, alpha,
 
     # optimizer
     #bsplineReg.SetOptimizerAsGradientDescent(learningRate=1.0, numberOfIterations=100, estimateLearningRate=bsplineReg.Once)   
-    bsplineReg.SetOptimizerAsLBFGSB(gradientConvergenceTolerance=gradConvTol, maximumNumberOfIterations=bsplineIter)
+    bsplineReg.SetOptimizerAsLBFGSB(gradientConvergenceTolerance=gradConvTol,
+                                    maximumNumberOfIterations=bsplineIter)
     bsplineReg.SetOptimizerScalesFromPhysicalShift()
 
     # multi-resolution setup
@@ -311,15 +347,18 @@ def frame_gen_bspline_registration(im1, im2, alpha,
     if debug:
         bsplineReg.AddCommand(sitk.sitkStartEvent, rc.metric_start_plot)
         bsplineReg.AddCommand(sitk.sitkEndEvent, rc.metric_end_plot)
-        bsplineReg.AddCommand(sitk.sitkMultiResolutionIterationEvent, rc.metric_update_multires_iterations) 
-        bsplineReg.AddCommand(sitk.sitkIterationEvent, lambda: rc.metric_plot_values(bsplineReg))
+        bsplineReg.AddCommand(sitk.sitkMultiResolutionIterationEvent,
+                              rc.metric_update_multires_iterations)
+        bsplineReg.AddCommand(sitk.sitkIterationEvent,
+                              lambda: rc.metric_plot_values(bsplineReg))
 
     # Execute
     bspline_transform = bsplineReg.Execute(fixed_image, moving_image)
 
     if debug:
         print('Final metric value: {0}'.format(bsplineReg.GetMetricValue()))
-        print('Optimizer\'s stopping condition, {0}'.format(bsplineReg.GetOptimizerStopConditionDescription()))
+        print('Optimizer\'s stopping condition, {0}'.format(
+            bsplineReg.GetOptimizerStopConditionDescription()))
 
     # compose affine and bspline transform
     final_transform = sitk.Transform(bspline_transform)
@@ -332,23 +371,30 @@ def frame_gen_bspline_registration(im1, im2, alpha,
     disp_field_image = disp_field_converter.Execute(final_transform)
 
     # module displacement field image
-    disp_field_image_fwd = sitk.GetImageFromArray(alpha * sitk.GetArrayFromImage(disp_field_image), isVector=True)
-    disp_field_image_bck = sitk.GetImageFromArray((1 - alpha) * sitk.GetArrayFromImage(disp_field_image), isVector=True)
+    disp_field_image_fwd = sitk.GetImageFromArray(
+        alpha * sitk.GetArrayFromImage(disp_field_image), isVector=True)
+    disp_field_image_bck = sitk.GetImageFromArray(
+        (1 - alpha) * sitk.GetArrayFromImage(disp_field_image), isVector=True)
 
     # transform moving image
     defaultVal = np.double(np.median(im1[:, 0]))
 
     final_transform_fwd = sitk.DisplacementFieldTransform(disp_field_image_fwd)
-    moving_resampled = sitk.Resample(moving_image, fixed_image, final_transform_fwd,
-                                     sitk.sitkLinear, defaultVal, fixed_image.GetPixelIDValue())    
+    moving_resampled = sitk.Resample(moving_image, fixed_image,
+                                     final_transform_fwd,
+                                     sitk.sitkLinear, defaultVal,
+                                     fixed_image.GetPixelIDValue())
 
     # transform fixed image
     defaultVal = np.double(np.median(im2[:, 0]))
     final_transform_bck = sitk.DisplacementFieldTransform(disp_field_image_bck)
-    fixed_resampled = sitk.Resample(fixed_image, fixed_image, final_transform_bck,
-                                    sitk.sitkLinear, defaultVal, fixed_image.GetPixelIDValue())    
+    fixed_resampled = sitk.Resample(fixed_image, fixed_image,
+                                    final_transform_bck,
+                                    sitk.sitkLinear, defaultVal,
+                                    fixed_image.GetPixelIDValue())
 
-    imResult = 0.5 * (sitk.GetArrayFromImage(fixed_resampled) + sitk.GetArrayFromImage(moving_resampled))
+    imResult = 0.5 * (sitk.GetArrayFromImage(fixed_resampled) +
+                      sitk.GetArrayFromImage(moving_resampled))
 
     return imResult, final_transform
 
@@ -375,6 +421,48 @@ def compute_instantaneous_phase(ts):
 
     return ts_instaphase_nmzd, ts_instaamp
 
+# define gaussian phase kernel
+def gauss_phase_kernel(x, mu, sigma):
+    #r = (normalizeAngles(x - mu, [-np.pi, np.pi]))
+    #r = (x - mu) % 1
+    r = phaseDist(mu, x)
+    return np.exp(-r**2 / (2.0 * sigma**2))
+
+# define gaussian similarity kernel
+def gauss_similarity_kernel(x, mu, sigma):
+    r = (x - mu)
+    return np.exp(-r**2 / (2.0 * sigma**2))
+
+
+class LowessRegression(object):
+
+    def __init__(self, frac=0.2, it=3):
+
+        self.frac_ = frac
+        self.it_ = 3
+    
+    def fit(self, x, y):
+
+        res_lowess = sm.nonparametric.lowess(y, x, 
+                                             frac=self.frac_, it=self.it_,
+                                             is_sorted=True)
+
+        self.lowess_x_ = res_lowess[:, 0]
+        self.lowess_y_ = res_lowess[:, 1]
+        self.residual_mad_ = sm.robust.scale.mad(y - self.lowess_y_, center=0)
+
+        self.lowess_interp_ = scipy.interpolate.interp1d(
+            self.lowess_x_, self.lowess_y_,
+            bounds_error=False, fill_value='extrapolate')
+
+    def predict(self, x):
+
+        return self.lowess_interp_(x)
+
+    def residual_mad(self):
+
+        return self.residual_mad_
+
 
 class USGatingAndSuperResolution(object):
 
@@ -384,8 +472,9 @@ class USGatingAndSuperResolution(object):
                  lr_xy_downsampling=1, lr_gamma_factor=1, lr_conv_tol=1e-05,
                  # phase estimation parameters
                  similarity_method='pca', pca_n_components=0.99,
-                 detrend_method='lowess', lowess_frac=0.3, lowess_mode='-',
-                 hp_lamda = 1600
+                 detrend_method='hp', lowess_frac=0.3, lowess_mode='-',
+                 hp_lamda = 6400,
+                 respiration_present=False, resp_phase_cutoff=0.2
                  ):
 
         # noise suppression parameters
@@ -420,6 +509,8 @@ class USGatingAndSuperResolution(object):
 
         self.hp_lamda = hp_lamda
 
+        self.respiration_present = respiration_present
+        self.resp_phase_cutoff = resp_phase_cutoff
 
     def _denoise(self, imInput):
 
@@ -562,11 +653,6 @@ class USGatingAndSuperResolution(object):
         # Step-1: compute inter-frame similarity matrix
         simMat = self._compute_frame_similarity(imAnalyze)
 
-        # trend extraction using loess (local regression)
-        def trendLowess(a, frac=0.3):
-            return sm.nonparametric.lowess(a, np.arange(len(a)),
-                                           frac=frac, is_sorted=True)[:, 1]
-
         # find the optimal key frame and use it to decompose
         spectralEntropy = np.zeros((simMat.shape[0], 1))
 
@@ -621,6 +707,46 @@ class USGatingAndSuperResolution(object):
         ts_instaphase = np.arctan2(np.imag(ts_analytic), np.real(ts_analytic))
         ts_instaphase_nmzd = (ts_instaphase + np.pi) / (2 * np.pi)
 
+        # estimate instantaneous phase of trend component - breathing
+        ts_trend_analytic = scipy.signal.hilbert(ts_trend - ts_trend.mean())
+        ts_trend_instaamp = np.abs(ts_trend_analytic)
+        ts_trend_instaphase = np.arctan2(np.imag(ts_trend_analytic), np.real(ts_trend_analytic)) 
+        ts_trend_instaphase_nmzd = (ts_trend_instaphase + np.pi) / (2 * np.pi)    
+
+        # learn mapping from phase to similarity
+        resp_ind = []
+
+        if self.respiration_present:  # is set to True when breathing is present
+
+            # identify frames with bad influence by respiration
+            w = self.resp_phase_cutoff
+            resp_ind = np.argwhere(
+                np.logical_or(ts_trend_instaphase_nmzd < w,
+                              ts_trend_instaphase_nmzd > 1.0 - w)
+            ).ravel()
+
+            print 'Frames with bad respiration influence = %.2f%%' % (
+                100.0 * len(resp_ind) / len(ts))
+
+        # find similarity bounds at each phase using lowess
+        phaseord_est = np.argsort(ts_instaphase_nmzd)
+
+        phaseord_est_wout_resp = [fid for fid in phaseord_est
+                                  if fid not in resp_ind]
+
+        fid_lowess = fid_best
+        # fid_lowess = phaseord_est_wout_resp[0]
+
+        assert(fid_lowess not in resp_ind)
+
+        ph_wout_resp = ts_instaphase_nmzd[phaseord_est_wout_resp]
+        sim_wout_resp = simMat[fid_lowess, phaseord_est_wout_resp]
+
+        sim_lowess_reg = LowessRegression()
+        sim_lowess_reg.fit(ph_wout_resp, sim_wout_resp)
+
+        ts_lowess = sim_lowess_reg.predict(ts_instaphase_nmzd)
+
         # store results
         self.simMat_Trend_ = simMat_Trend
         self.simMat_Seasonal_ = simMat_Seasonal
@@ -637,6 +763,23 @@ class USGatingAndSuperResolution(object):
         self.ts_instaphase_ = ts_instaphase
         self.ts_instaphase_nmzd_ = ts_instaphase_nmzd
 
+        self.ts_trend_analytic_ = ts_trend_analytic
+        self.ts_trenda_instaamp_ = ts_trend_instaamp
+        self.ts_trend_instaphase_ = ts_trend_instaphase
+        self.ts_trend_instaphase_nmzd_ = ts_trend_instaphase_nmzd
+
+        self.resp_ind_ = resp_ind
+        self.sim_lowess_reg_ = sim_lowess_reg
+        self.ts_lowess_ = ts_lowess
+        self.fid_lowess_ = fid_lowess
+
+    def get_instaphase(self):
+
+        return self.ts_instaphase_nmzd_
+
+    def get_instaphase_trend(self):
+
+        return self.ts_trend_instaphase_nmzd_
 
     def setInput(self, imInput):
 
@@ -672,71 +815,226 @@ class USGatingAndSuperResolution(object):
         print '\n>> Done processing ... took a total of %.2f seconds' % (
             time.time() - tProcessing)
 
+    def validate_frame_generation(self, k=1, rounds=10, method=None,
+                                  metric='ncorr', seed=1,
+                                  mi_bins=16, k_mad=None):
+
+        if k_mad is not None:
+
+            valid_ind = [fid for fid in range(self.imInput_.shape[2])
+                          if (np.abs(self.ts_[fid] - self.ts_lowess_[fid]) <
+                              k_mad * self.sim_lowess_reg_.residual_mad())]
+
+        else:
+
+            valid_ind = [fid for fid in range(self.imInput_.shape[2])
+                         if fid not in self.resp_ind_]
+
+
+        mval = np.zeros(rounds)
+
+        np.random.seed(seed)
+
+        for r in range(rounds):
+
+            print r+1,
+
+            exclude_ind = np.random.choice(valid_ind, k, replace=False)
+            ph_exclude = self.ts_instaphase_nmzd_[exclude_ind]
+
+            # print '\t', exclude_ind
+            # print '\t', ph_exclude
+
+            imExclude = self.imInput_[:, :, exclude_ind].astype('float')
+
+            imSynth = self.generateFramesFromPhaseValues(
+                ph_exclude, method=method, show_progress=False,
+                exclude_frames=np.union1d(exclude_ind, self.resp_ind_))
+
+            cur_mval = 0.0
+
+            for i in range(len(exclude_ind)):
+
+                if metric == 'ncorr':
+
+                    cur_mval += ncorr(imExclude[:, :, i], imSynth[:, :, i])
+
+                elif metric == 'rmse':
+
+                    cur_mval += rmse(imExclude[:, :, i], imSynth[:, :, i])
+
+                elif metric == 'mad':
+
+                    cur_mval += np.median(
+                        np.abs(imExclude.ravel() - imSynth.ravel()))
+
+                elif metric == 'mutual_information':
+
+                    cur_mval += medpy.metric.image.mutual_information(
+                        imExclude, imSynth, bins=mi_bins
+                    )
+
+                else:
+
+                    raise ValueError('Invalid metric')
+
+            cur_mval /= len(exclude_ind)
+
+            mval[r] = cur_mval
+
+        print '\n', mval
+
+        return mval
+
+
     def generateFramesFromPhaseValues(self, phaseVals,
-                                      imInput=None, method=None):                                      
+                                      imInput=None, method=None,
+                                      exclude_frames=None,
+                                      show_progress=True):
  
         # validate phase vals
         phaseVals = np.array(phaseVals)
-        
+
         if np.any(phaseVals < 0) or np.any(phaseVals > 1):
             raise ValueError('Invalid phase values')
+
+        phaseRecorded = self.ts_instaphase_nmzd_
+        simRecorded = self.ts_
 
         # set imInput
         if imInput is None:
             imInput = self.imInput_
 
-        # generate frames
-        imOutputVideo = []
+        # exclude the frames requested
+        if exclude_frames is not None:
 
+            fmask = np.ones(imInput.shape[2], dtype=bool)
+            fmask[exclude_frames] = False
+
+            imInput = imInput[:, :, fmask]
+            phaseRecorded = phaseRecorded[fmask]
+            simRecorded = simRecorded[fmask]
+
+        # generate frames
         numOutFrames = len(phaseVals)
 
+        imOutputVideo = np.zeros(imInput.shape[:2] + (numOutFrames, ))
+
         if method is None:
-            method = config_framegen_using_bspline_registration()
+            method = config_framegen_using_kernel_regression()
 
-        if method['name'] == 'kernel_regression':   
+        if method['name'].startswith('kernel_regression'):
 
-            # compute sigmaGKR 
-            sigmaGKRFactor = method['params']['sigmaGKRFactor']
-            #sigmaGKR = sigmaGKRFactor * np.mean(np.abs(np.diff(np.sort(self.ts_instaphase_))))
-            #sigmaGKR = sigmaGKRFactor * np.mean(np.abs(np.diff(np.sort(self.ts_instaphase_nmzd_))))
-            sigmaGKR = sigmaGKRFactor * np.mean(phaseDiff(np.sort(self.ts_instaphase_nmzd_)))
-            print 'sigmaGKR = ', sigmaGKR
+            # compute sigmaPhase
+            kPhase = method['params']['sigmaPhaseFactor']
 
-            # define gaussian
-            def gauss_kernel(x, mu, sigma):
-                #r = (normalizeAngles(x - mu, [-np.pi, np.pi]))
-                #r = (x - mu) % 1
-                r = phaseDist(mu, x)
-                return np.exp(-r**2 / (2.0 * sigma**2))            
+            pdiff = phaseDiff(phaseRecorded)
+            pstd = sm.robust.scale.mad(pdiff, center=0)
 
-            X = np.reshape(imInput, (np.prod(imInput.shape[:2]), imInput.shape[2])).T
+            sigmaPhase = kPhase * pstd
+
+            # print 'sigmaPhase = ', sigmaPhase
+
+            # compute sigmaSimilarity
+            kSim = method['params']['sigmaSimilarityFactor']
+
+            if kSim is not None:
+
+                if exclude_frames is None:
+
+                    sim_lowess_reg = self.sim_lowess_reg_
+
+                else:
+
+                    sim_lowess_reg = LowessRegression()
+                    sim_lowess_reg.fit(phaseRecorded, simRecorded)
+
+                sigmaSim = kSim * sim_lowess_reg.residual_mad()
+
+                phaseSims = sim_lowess_reg.predict(phaseVals)
+
+            X = np.reshape(imInput,
+                           (np.prod(imInput.shape[:2]), imInput.shape[2])).T
 
         prevPercent = 0
 
         for fid in range(numOutFrames):
 
             curPhase = phaseVals[fid]
-            curPhaseAngle = np.pi * (2 * curPhase - 1)
 
-            if method['name'] == 'kernel_regression':
+            if method['name'].startswith('kernel_regression'):
 
                 # generate frame by rbf interpolation
-                #w = gauss_kernel(self.ts_instaphase_, curPhaseAngle, sigmaGKR).T
-                w = gauss_kernel(self.ts_instaphase_nmzd_, curPhase, sigmaGKR).T
-                imCurFrame = np.reshape(np.dot(w / w.sum(), X),
-                                        imInput.shape[:2])
+                wPhase = gauss_phase_kernel(
+                    phaseRecorded, curPhase, sigmaPhase).T
+
+                w = wPhase
+
+                if kSim is not None:
+
+                    wSim = gauss_similarity_kernel(
+                        simRecorded, phaseSims[fid], sigmaSim).T
+
+                    w = wPhase * wSim
+
+                w /= w.sum()
+
+                if method['params']['stochastic']:
+
+                    numRecordedFrames = X.shape[0]
+                    numPixels = X.shape[1]
+
+                    '''
+                    imVote = np.zeros((256, numPixels))
+
+                    for p in range(numPixels):
+                        for f in range(numRecordedFrames):
+
+                            imVote[X[f, p], p] += w[f]
+
+                    d = np.zeros(numPixels)
+
+                    for p in range(numPixels):
+
+                        v = imVote[:, p]
+                        v /= v.sum()
+
+                        d[p] = np.random.choice(np.arange(256), size=1, p=v)
+
+                    imCurFrame = np.reshape(d, imInput.shape[:2])
+                    '''
+
+                    # '''
+                    fsel = np.random.choice(np.arange(numRecordedFrames),
+                                            size=numPixels, p=w)
+
+                    d = np.zeros(X.shape[1])
+
+                    for i in range(d.size):
+                        d[i] = X[fsel[i], i]
+
+                    imCurFrame = np.reshape(d, imInput.shape[:2])
+                    # '''
+
+                    imCurFrame = scipy.ndimage.filters.median_filter(
+                        imCurFrame, (3, 3))
+
+                else:
+
+                    imCurFrame = np.reshape(np.dot(w, X), imInput.shape[:2])
+
 
             elif method['name'] in ['optical_flow', 'bspline_registration',
                                     'linear_interpolation']:
 
-                # generate frame using optical flow
+                # find closest prev and next frame
                 prevPhaseInd = np.argmin(
-                    (curPhase - self.ts_instaphase_nmzd_) % 1)
-                prevPhase = self.ts_instaphase_nmzd_[prevPhaseInd]
+                    (curPhase - phaseRecorded) % 1)
+                prevPhase = phaseRecorded[prevPhaseInd]
 
                 nextPhaseInd = np.argmin(
-                    (self.ts_instaphase_nmzd_ - curPhase) % 1)
-                nextPhase = self.ts_instaphase_nmzd_[nextPhaseInd]                
+                    (phaseRecorded - curPhase) % 1)
+                nextPhase = phaseRecorded[nextPhaseInd]
 
                 prevPhaseDist = phaseDist(prevPhase, curPhase)
                 nextPhaseDist = phaseDist(curPhase, nextPhase)
@@ -766,23 +1064,24 @@ class USGatingAndSuperResolution(object):
                 raise ValueError('Invalid method - %s' % method['name'])
 
             # add to video
-            if fid == 0:
-                imOutputVideo = imCurFrame
-            else:
-                imOutputVideo = np.dstack((imOutputVideo, imCurFrame))
+            imOutputVideo[:, :, fid] = imCurFrame
 
             # update progress
-            curPercent = np.floor(100.0*fid/numOutFrames)
-            if curPercent > prevPercent:
-                prevPercent = curPercent
-                print '%.2d%%' % curPercent,
+            if show_progress:
 
-        print '\n'
+                curPercent = np.floor(100.0*fid/numOutFrames)
+                if curPercent > prevPercent:
+                    prevPercent = curPercent
+                    print '%.2d%%' % curPercent,
+
+        if show_progress:
+            print '\n'
+
         return imOutputVideo
 
     
     def generateVideo(self, numOutFrames, phaseRange,
-                      imInput=None, method=None):                                                    
+                      imInput=None, method=None):
 
         # validate phase argument
         if not (len(phaseRange) == 2 and
