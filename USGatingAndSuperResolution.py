@@ -12,6 +12,7 @@ import registration_utilities as ru
 import registration_callbacks as rc
 import skimage.measure
 import medpy.metric.image
+import functools
 
 from statsmodels.tsa.filters.hp_filter import hpfilter
 from statsmodels.nonparametric.smoothers_lowess import lowess
@@ -441,11 +442,11 @@ class LowessRegression(object):
         self.frac_ = frac
         self.it_ = 3
     
-    def fit(self, x, y):
+    def fit(self, x, y, is_sorted=False):
 
         res_lowess = sm.nonparametric.lowess(y, x, 
                                              frac=self.frac_, it=self.it_,
-                                             is_sorted=True)
+                                             is_sorted=is_sorted)
 
         self.lowess_x_ = res_lowess[:, 0]
         self.lowess_y_ = res_lowess[:, 1]
@@ -743,7 +744,7 @@ class USGatingAndSuperResolution(object):
         sim_wout_resp = simMat[fid_lowess, phaseord_est_wout_resp]
 
         sim_lowess_reg = LowessRegression()
-        sim_lowess_reg.fit(ph_wout_resp, sim_wout_resp)
+        sim_lowess_reg.fit(ph_wout_resp, sim_wout_resp, is_sorted=True)
 
         ts_lowess = sim_lowess_reg.predict(ts_instaphase_nmzd)
 
@@ -817,7 +818,8 @@ class USGatingAndSuperResolution(object):
 
     def validate_frame_generation(self, k=1, rounds=10, method=None,
                                   metric='ncorr', seed=1,
-                                  mi_bins=16, k_mad=None):
+                                  mi_bins=16, k_mad=None, 
+                                  exclude_similar_phase_frames=False):
 
         if k_mad is not None:
 
@@ -835,25 +837,46 @@ class USGatingAndSuperResolution(object):
 
         np.random.seed(seed)
 
+        period = np.int(self.period_ + 0.5)
+        
         for r in range(rounds):
 
             print r+1,
 
-            exclude_ind = np.random.choice(valid_ind, k, replace=False)
-            ph_exclude = self.ts_instaphase_nmzd_[exclude_ind]
+            # choose k frames randomly
+            ksel_ind = np.random.choice(valid_ind, k, replace=False)
+            ph_ksel = self.ts_instaphase_nmzd_[ksel_ind]
+            
+            # print '\t', zip(ksel_ind, ph_ksel)
+            
+            # Find similar phase frames in each cycle to exclude if requested
+            sim_phase_ind = []
+            
+            if exclude_similar_phase_frames:
 
-            # print '\t', exclude_ind
-            # print '\t', ph_exclude
+                for fid in ksel_ind:
+                    
+                    prev_ind = np.arange(fid-period, 0, -period, dtype='int')
+                    next_ind = np.arange(fid+period, self.imInput_.shape[2], period, dtype='int')
+                    
+                    sim_phase_ind.extend(prev_ind)
+                    sim_phase_ind.extend(next_ind)
 
-            imExclude = self.imInput_[:, :, exclude_ind].astype('float')
+                sim_phase_ind = np.unique(sim_phase_ind)
 
+                # print '\t', zip(sim_phase_ind, self.ts_instaphase_nmzd_[sim_phase_ind])
+
+            imExclude = self.imInput_[:, :, ksel_ind].astype('float')
+
+            exclude_find = functools.reduce(np.union1d, (ksel_ind, self.resp_ind_, sim_phase_ind))
+                                           
             imSynth = self.generateFramesFromPhaseValues(
-                ph_exclude, method=method, show_progress=False,
-                exclude_frames=np.union1d(exclude_ind, self.resp_ind_))
+                ph_ksel, method=method, show_progress=False,
+                exclude_frames=exclude_find)
 
             cur_mval = 0.0
 
-            for i in range(len(exclude_ind)):
+            for i in range(len(ksel_ind)):
 
                 if metric == 'ncorr':
 
@@ -878,7 +901,7 @@ class USGatingAndSuperResolution(object):
 
                     raise ValueError('Invalid metric')
 
-            cur_mval /= len(exclude_ind)
+            cur_mval /= len(ksel_ind)
 
             mval[r] = cur_mval
 
