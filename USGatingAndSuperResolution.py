@@ -838,7 +838,7 @@ class USGatingAndSuperResolution(object):
         np.random.seed(seed)
 
         period = np.int(self.period_ + 0.5)
-        
+
         for r in range(rounds):
 
             print r+1,
@@ -846,19 +846,19 @@ class USGatingAndSuperResolution(object):
             # choose k frames randomly
             ksel_ind = np.random.choice(valid_ind, k, replace=False)
             ph_ksel = self.ts_instaphase_nmzd_[ksel_ind]
-            
+
             # print '\t', zip(ksel_ind, ph_ksel)
-            
+
             # Find similar phase frames in each cycle to exclude if requested
             sim_phase_ind = []
-            
+
             if exclude_similar_phase_frames:
 
                 for fid in ksel_ind:
-                    
+
                     prev_ind = np.arange(fid-period, 0, -period, dtype='int')
                     next_ind = np.arange(fid+period, self.imInput_.shape[2], period, dtype='int')
-                    
+
                     sim_phase_ind.extend(prev_ind)
                     sim_phase_ind.extend(next_ind)
 
@@ -869,7 +869,7 @@ class USGatingAndSuperResolution(object):
             imExclude = self.imInput_[:, :, ksel_ind].astype('float')
 
             exclude_find = functools.reduce(np.union1d, (ksel_ind, self.resp_ind_, sim_phase_ind))
-                                           
+
             imSynth = self.generateFramesFromPhaseValues(
                 ph_ksel, method=method, show_progress=False,
                 exclude_frames=exclude_find)
