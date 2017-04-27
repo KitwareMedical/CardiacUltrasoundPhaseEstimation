@@ -8,9 +8,7 @@ import statsmodels.api as sm
 import angles
 import cv2
 import SimpleITK as sitk
-import registration_utilities as ru
 import registration_callbacks as rc
-import skimage.measure
 import medpy.metric.image
 import functools
 
@@ -21,7 +19,7 @@ sys.path.insert(0, 'pyLAR')
 import core.ialm
 
 
-class USGatingAndSuperResolution(object):
+class USPGS(object):
 
     def __init__(self,
                  # noise suppression parameters
@@ -40,6 +38,10 @@ class USGatingAndSuperResolution(object):
                  respiration_present=False, resp_phase_cutoff=0.2
                  ):
         """
+        This class includes novel image-based methods for instantaneous
+        cardio-respiratory phase estimation, respiratory gating, and
+        temporal super-resolution.
+
         Parameters
         ----------
         median_filter_size : integer
@@ -145,7 +147,7 @@ class USGatingAndSuperResolution(object):
         self.respiration_present = respiration_present
         self.resp_phase_cutoff = resp_phase_cutoff
 
-    def setInput(self, imInput):
+    def set_input(self, imInput):
         """
         Sets the input video to be analyzed
 
@@ -189,7 +191,7 @@ class USGatingAndSuperResolution(object):
         print '\n>> Done processing ... took a total of %.2f seconds' % (
             time.time() - tProcessing)
 
-    def get_instaphase(self):
+    def get_cardiac_phase(self):
         """
         Gets the instantaneous cardiac phase of each frame in the video
 
@@ -202,7 +204,7 @@ class USGatingAndSuperResolution(object):
 
         return self.ts_instaphase_nmzd_
 
-    def get_instaphase_trend(self):
+    def get_respiratory_phase(self):
         """
          Gets the instantaneous respiratory phase of each frame in the video
 
@@ -215,8 +217,8 @@ class USGatingAndSuperResolution(object):
 
         return self.ts_trend_instaphase_nmzd_
 
-    def generateSinglePeriodVideo(self, numOutFrames,
-                                  imInput=None, method=None):
+    def generate_single_cycle_video(self, numOutFrames,
+                                    imInput=None, method=None):
         """
         Reconstructs the video of a single cardiac cycle at a desired temporal
         resolution.
@@ -251,11 +253,12 @@ class USGatingAndSuperResolution(object):
         """
 
         phaseRange = np.array([0, 1])
-        return self.generateVideoFromPhaseRange(numOutFrames, phaseRange,
-                                                imInput=imInput, method=method)
+        return self.generate_video_from_phase_range(numOutFrames, phaseRange,
+                                                    imInput=imInput,
+                                                    method=method)
 
-    def generateVideoFromPhaseRange(self, numOutFrames, phaseRange,
-                                    imInput=None, method=None):
+    def generate_video_from_phase_range(self, numOutFrames, phaseRange,
+                                        imInput=None, method=None):
         """
         Reconstructs video within a given phase range at a desired temporal
         resolution.
@@ -301,13 +304,14 @@ class USGatingAndSuperResolution(object):
         # generate video
         phaseVals = np.linspace(phaseRange[0], phaseRange[1], numOutFrames)
 
-        return self.generateFramesFromPhaseValues(phaseVals,
-                                                  imInput=imInput, method=method)
+        return self.generate_frames_from_phase_values(phaseVals,
+                                                      imInput=imInput,
+                                                      method=method)
 
-    def generateFramesFromPhaseValues(self, phaseVals,
-                                      imInput=None, method=None,
-                                      exclude_frames=None,
-                                      show_progress=True):
+    def generate_frames_from_phase_values(self, phaseVals,
+                                          imInput=None, method=None,
+                                          exclude_frames=None,
+                                          show_progress=True):
         """
          Reconstructs the images corresponding to a list of phase values.
 
@@ -602,7 +606,6 @@ class USGatingAndSuperResolution(object):
             valid_ind = [fid for fid in range(self.imInput_.shape[2])
                          if fid not in self.resp_ind_]
 
-
         mval = np.zeros(rounds)
 
         np.random.seed(seed)
@@ -640,7 +643,7 @@ class USGatingAndSuperResolution(object):
 
             exclude_find = functools.reduce(np.union1d, (ksel_ind, self.resp_ind_, sim_phase_ind))
 
-            imSynth = self.generateFramesFromPhaseValues(
+            imSynth = self.generate_frames_from_phase_values(
                 ph_ksel, method=method, show_progress=False,
                 exclude_frames=exclude_find)
 
