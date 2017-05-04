@@ -163,31 +163,31 @@ def loadVideoFromFile(dataFilePath, sigmaSmooth=None, resizeAmount=None):
     # print metadata
     metadata = {}
 
-    numFrames = vidseq.get(cv2.cv.CV_CAP_PROP_FRAME_COUNT)
+    numFrames = vidseq.get(cv2.CAP_PROP_FRAME_COUNT)
     print '\tFRAME_COUNT = ', numFrames
     metadata['FRAME_COUNT'] = numFrames
 
-    frameHeight = vidseq.get(cv2.cv.CV_CAP_PROP_FRAME_HEIGHT)
+    frameHeight = vidseq.get(cv2.CAP_PROP_FRAME_HEIGHT)
     if frameHeight > 0:
         print '\tFRAME HEIGHT = ', frameHeight
         metadata['FRAME_HEIGHT'] = frameHeight
 
-    frameWidth = vidseq.get(cv2.cv.CV_CAP_PROP_FRAME_WIDTH)
+    frameWidth = vidseq.get(cv2.CAP_PROP_FRAME_WIDTH)
     if frameWidth > 0:
         print '\tFRAME WIDTH = ', frameWidth
         metadata['FRAME_WIDTH'] = frameWidth
 
-    fps = vidseq.get(cv2.cv.CV_CAP_PROP_FPS)
+    fps = vidseq.get(cv2.CAP_PROP_FPS)
     if fps > 0:
         print '\tFPS = ', fps
         metadata['FPS'] = fps
 
-    fmt = vidseq.get(cv2.cv.CV_CAP_PROP_FORMAT)
+    fmt = vidseq.get(cv2.CAP_PROP_FORMAT)
     if fmt > 0:
         print '\FORMAT = ', fmt
         metadata['FORMAT'] = fmt
 
-    vmode = vidseq.get(cv2.cv.CV_CAP_PROP_MODE)
+    vmode = vidseq.get(cv2.CAP_PROP_MODE)
     if vmode > 0:
         print '\MODE = ', vmode
         metadata['MODE'] = MODE
