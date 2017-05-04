@@ -37,7 +37,7 @@ pip install requirements.txt
 The code uses opencv's Python interface for reading, displaying, and writing videos. 
 
 pip installing the requirements using the aforementioned command attempts to 
-install opencv's python interface by installing the `opencv-python>=3.2.07` 
+install opencv's python interface by installing the `opencv-python>=3.2.0.7` 
 package from [PyPI](https://pypi.python.org/pypi/opencv-python) for convenience. 
 
 However since this is not an official release of opencv, it may cause issues,
