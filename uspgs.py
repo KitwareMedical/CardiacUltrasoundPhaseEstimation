@@ -34,8 +34,9 @@ class USPGS(object):
                  detrend_method='hp',
                  lowess_frac=0.3, lowess_mode='-',
                  hp_lamda = 6400,
+                 band_pass_bpm=None,
                  # respiratory gating
-                 respiration_present=False, resp_phase_cutoff=0.2
+                 respiration_present=True, resp_phase_cutoff=0.2
                  ):
         """
         This class includes novel image-based methods for instantaneous
@@ -103,6 +104,12 @@ class USPGS(object):
              Default value is 6400 that was empirically found to work well for
              separating the respiration and cardiac motions. We suggest trying
              different values in powers of 2.
+        band_pass_bpm : None or array_like
+            Specifies the range of the band-pass filter (in beats/cycles per
+            min) to be applied to the frame similarity signal before decomposing
+            it into the trend/respiratory and residual/cardiac components. This
+            parameter can be used to suppress the effects of motions that
+            are outside the frequency band of cardio-respiratory motion.
         respiration_present : bool
             Set to True if the video has respiratory motion. Default is True.
         resp_phase_cutoff : double
@@ -144,10 +151,14 @@ class USPGS(object):
 
         self.hp_lamda = hp_lamda
 
+        if band_pass_bpm is not None and len(band_pass_bpm) != 2:
+            raise ValueError('band_pass_bpm must be an array of two elements')
+        self.band_pass_bpm = band_pass_bpm
+
         self.respiration_present = respiration_present
         self.resp_phase_cutoff = resp_phase_cutoff
 
-    def set_input(self, imInput):
+    def set_input(self, imInput, fps):
         """
         Sets the input video to be analyzed
 
@@ -155,9 +166,12 @@ class USPGS(object):
         ----------
         imInput : array_like
             Input video to be analyzed
+        fps : double
+            Frame rate in frames per sec
         """
 
         self.imInput_ = imInput
+        self.fps_ = fps
 
     def process(self):
         """
@@ -191,31 +205,49 @@ class USPGS(object):
         print '\n>> Done processing ... took a total of %.2f seconds' % (
             time.time() - tProcessing)
 
+    def get_frame_similarity_signal(self):
+        """
+        Returns the inter-frame similarity signal
+        """
+
+        return self.ts_
+
+    def get_cardiac_signal(self):
+        """
+        Returns the residual/cardiac component of the inter-frame similarity
+        signal
+        """
+
+        return self.ts_seasonal_
+
+    def get_respiration_signal(self):
+        """
+        Returns the trend/respiration component of the inter-frame similarity
+        signal
+        """
+
+        return self.ts_trend_
+
     def get_cardiac_phase(self):
         """
-        Gets the instantaneous cardiac phase of each frame in the video
-
-        Returns
-        -------
-        cardiac_phase : array_like
-            A 1D numpy array containing the instantaneous cardiac phase of each
-            frame in the input video.
+        Returns the instantaneous cardiac phase of each frame in the video
         """
 
         return self.ts_instaphase_nmzd_
 
     def get_respiratory_phase(self):
         """
-         Gets the instantaneous respiratory phase of each frame in the video
-
-         Returns
-         -------
-         respiratory_phase : array_like
-             A 1D numpy array containing the instantaneous respiratory phase
-             of each frame in the input video.
+         Returns the instantaneous respiratory phase of each frame in the video
          """
 
         return self.ts_trend_instaphase_nmzd_
+
+    def get_cardiac_cycle_duration(self):
+        """
+         Returns the duration of the cardiac cycle in frames
+        """
+
+        return self.period_
 
     def generate_single_cycle_video(self, numOutFrames,
                                     imInput=None, method=None):
@@ -827,6 +859,7 @@ class USPGS(object):
         # find the optimal key frame and use it to decompose
         spectralEntropy = np.zeros((simMat.shape[0], 1))
 
+        simMat_Bpass = np.zeros_like(simMat)
         simMat_Trend = np.zeros_like(simMat)
         simMat_Seasonal = np.zeros_like(simMat)
 
@@ -834,29 +867,43 @@ class USPGS(object):
 
             ts = simMat[fid, ]
 
+            # perform band pass filtering if requested
+            if self.band_pass_bpm is not None:
+
+                pass_band = np.array(self.band_pass_bpm) / 60.0
+                nyq = 0.5 * self.fps_
+                b, a = scipy.signal.butter(5, pass_band / nyq, btype='band')
+                ts_bpass = scipy.signal.lfilter(b, a, ts)
+
+            else:
+
+                ts_bpass = ts
+
             # decompose into trend and seasonal parts
             if self.detrend_method == 'lowess':
 
                 # lowess regression
-                ts_seasonal, ts_trend = detrend_lowess(ts,
+                ts_seasonal, ts_trend = detrend_lowess(ts_bpass,
                                                        frac=self.lowess_frac,
                                                        mode=self.lowess_mode)
 
             else:
 
                 # hoedrick-prescott filter
-                ts_seasonal, ts_trend = hpfilter(ts, lamb=self.hp_lamda)
+                ts_seasonal, ts_trend = hpfilter(ts_bpass, lamb=self.hp_lamda)
 
             # compute periodogram entropy of the seasonal part
             freq, power = scipy.signal.periodogram(ts_seasonal)
 
             # store result
+            simMat_Bpass[fid, ] = ts_bpass
             simMat_Trend[fid, ] = ts_trend
             simMat_Seasonal[fid, ] = ts_seasonal
             spectralEntropy[fid] = scipy.stats.entropy(power)
 
         fid_best = np.argmin(spectralEntropy)
         ts = simMat[fid_best, :]
+        ts_bpass = simMat_Bpass[fid_best, :]
         ts_trend = simMat_Trend[fid_best, :]
         ts_seasonal = simMat_Seasonal[fid_best, :]
 
@@ -881,7 +928,8 @@ class USPGS(object):
         # estimate instantaneous phase of trend component - breathing
         ts_trend_analytic = scipy.signal.hilbert(ts_trend - ts_trend.mean())
         ts_trend_instaamp = np.abs(ts_trend_analytic)
-        ts_trend_instaphase = np.arctan2(np.imag(ts_trend_analytic), np.real(ts_trend_analytic))
+        ts_trend_instaphase = np.arctan2(np.imag(ts_trend_analytic),
+                                         np.real(ts_trend_analytic))
         ts_trend_instaphase_nmzd = (ts_trend_instaphase + np.pi) / (2 * np.pi)
 
         # learn mapping from phase to similarity
@@ -919,12 +967,14 @@ class USPGS(object):
         ts_lowess = sim_lowess_reg.predict(ts_instaphase_nmzd)
 
         # store results
+        self.simMat_Bpass_ = simMat_Bpass
         self.simMat_Trend_ = simMat_Trend
         self.simMat_Seasonal_ = simMat_Seasonal
         self.spectralEntropy_ = spectralEntropy
 
         self.fid_best_ = fid_best
         self.ts_ = ts
+        self.ts_bpass_ = ts_bpass
         self.ts_trend_ = ts_trend
         self.ts_seasonal_ = ts_seasonal
         self.period_ = period
