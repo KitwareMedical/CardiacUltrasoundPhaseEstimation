@@ -31,7 +31,7 @@ to be able to run the code:
 You can run the following command to install these dependencies:
 
 ```
-pip install requirements.txt
+pip install -U -r requirements.txt
 ```
 
 The code uses opencv's Python interface for reading, displaying, and writing videos. 
