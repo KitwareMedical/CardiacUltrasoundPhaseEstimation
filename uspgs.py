@@ -873,7 +873,7 @@ class USPGS(object):
                 pass_band = np.array(self.band_pass_bpm) / 60.0
                 nyq = 0.5 * self.fps_
                 b, a = scipy.signal.butter(5, pass_band / nyq, btype='band')
-                ts_bpass = scipy.signal.lfilter(b, a, ts)
+                ts_bpass = scipy.signal.filtfilt(b, a, ts)
 
             else:
 
