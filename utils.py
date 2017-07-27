@@ -316,7 +316,7 @@ def SaveFigToDisk(saveDir, fileName, saveext=('.png', '.eps'), **kwargs):
         plt.savefig(os.path.join(saveDir, fileName + ext), **kwargs)
 
 
-def SaveImageToDisk(im, saveDir, fileName, saveext=('.png')):
+def SaveImageToDisk(im, saveDir, fileName, saveext=('.png',)):
     for ext in saveext:
         plt.imsave(os.path.join(saveDir, fileName + ext), im)
 

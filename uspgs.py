@@ -28,13 +28,15 @@ class USPGS(object):
                  lr_xy_downsampling=1,
                  lr_gamma_factor=1,
                  lr_conv_tol=1e-05,
-                 # phase estimation parameters
+                 # phase estimation
                  similarity_method='ncorr',
                  pca_n_components=0.99,
                  detrend_method='hp',
                  lowess_frac=0.3, lowess_mode='-',
-                 hp_lamda = 6400,
+                 hp_lamda=6400,
                  band_pass_bpm=None,
+                 cardiac_bpass_bpm=[310, 840],
+                 resp_lpass_bpm=230,
                  # respiratory gating
                  respiration_present=True, resp_phase_cutoff=0.2
                  ):
@@ -110,6 +112,11 @@ class USPGS(object):
             it into the trend/respiratory and residual/cardiac components. This
             parameter can be used to suppress the effects of motions that
             are outside the frequency band of cardio-respiratory motion.
+        cardiac_bpass_bpm : None or array_like
+            Specifies the frequency range (in beats per min) of cardiac motion
+        resp_lpass_bpm : None or double
+            Specified the upper frequency cutoff (in beats per min) of
+            respiratory motion
         respiration_present : bool
             Set to True if the video has respiratory motion. Default is True.
         resp_phase_cutoff : double
@@ -155,10 +162,16 @@ class USPGS(object):
             raise ValueError('band_pass_bpm must be an array of two elements')
         self.band_pass_bpm = band_pass_bpm
 
+        if len(cardiac_bpass_bpm) != 2:
+            raise ValueError('cardiac_bpass_bpm must be an array of two '
+                             'elements')
+        self.cardiac_bpass_bpm = cardiac_bpass_bpm
+        self.resp_lpass_bpm = resp_lpass_bpm
+
         self.respiration_present = respiration_present
         self.resp_phase_cutoff = resp_phase_cutoff
 
-    def set_input(self, imInput, fps):
+    def set_input(self, imInput, fps, zero_phase_fid=None):
         """
         Sets the input video to be analyzed
 
@@ -172,6 +185,7 @@ class USPGS(object):
 
         self.imInput_ = imInput
         self.fps_ = fps
+        self.zero_phase_fid_ = zero_phase_fid
 
     def process(self):
         """
@@ -788,9 +802,10 @@ class USPGS(object):
 
             tSimMat = time.time()
 
-            X = np.reshape(imAnalyze, (np.prod(imAnalyze.shape[:2]), imAnalyze.shape[-1]))
-            X = (X - X.mean(0)) / X.std(0)
-            simMat = np.dot(X.T, X) / X.shape[0]
+            X = np.reshape(imAnalyze, (np.prod(imAnalyze.shape[:2]), imAnalyze.shape[-1])).T
+            # X = (X - X.mean(0)) / X.std(0)
+            # simMat = np.dot(X.T, X) / X.shape[0]
+            simMat = 1 - scipy.spatial.distance.cdist(X, X, 'correlation')
 
             print 'took {} seconds'.format(time.time() - tSimMat)
 
@@ -851,7 +866,7 @@ class USPGS(object):
         # return results
         return simMat
 
-    def _estimate_phase(self, imAnalyze):
+    def _extract_cardio_respiratory_signals(self, imAnalyze):
 
         # Step-1: compute inter-frame similarity matrix
         simMat = self._compute_frame_similarity(imAnalyze)
@@ -865,15 +880,12 @@ class USPGS(object):
 
         for fid in range(simMat.shape[0]):
 
-            ts = simMat[fid, ]
+            ts = simMat[fid,]
 
             # perform band pass filtering if requested
             if self.band_pass_bpm is not None:
 
-                pass_band = np.array(self.band_pass_bpm) / 60.0
-                nyq = 0.5 * self.fps_
-                b, a = scipy.signal.butter(5, pass_band / nyq, btype='band')
-                ts_bpass = scipy.signal.filtfilt(b, a, ts)
+                ts_bpass = bpass_filter(ts, self.fps_, self.band_pass_bpm)
 
             else:
 
@@ -896,37 +908,63 @@ class USPGS(object):
             freq, power = scipy.signal.periodogram(ts_seasonal)
 
             # store result
-            simMat_Bpass[fid, ] = ts_bpass
-            simMat_Trend[fid, ] = ts_trend
-            simMat_Seasonal[fid, ] = ts_seasonal
+            simMat_Bpass[fid,] = ts_bpass
+            simMat_Trend[fid,] = ts_trend
+            simMat_Seasonal[fid,] = ts_seasonal
             spectralEntropy[fid] = scipy.stats.entropy(power)
 
-        fid_best = np.argmin(spectralEntropy)
+        if self.zero_phase_fid_ is None:
+            fid_best = np.argmin(spectralEntropy)
+        else:
+            fid_best = self.zero_phase_fid_
+
         ts = simMat[fid_best, :]
         ts_bpass = simMat_Bpass[fid_best, :]
         ts_trend = simMat_Trend[fid_best, :]
         ts_seasonal = simMat_Seasonal[fid_best, :]
 
+        # apply bpass/lpass filtering
+        ts_seasonal = bpass_filter(ts_seasonal,
+                                   self.fps_, self.cardiac_bpass_bpm)
+
+        ts_trend = lpass_filter(ts_trend, self.fps_, self.resp_lpass_bpm)
+        
         print "Chose frame %d as key frame" % fid_best
 
         # estimate period from the periodogram
         freq, power = scipy.signal.periodogram(ts_seasonal)
         maxPowerLoc = np.argmax(power)
-        period = 1.0/freq[maxPowerLoc]
+        period = 1.0 / freq[maxPowerLoc]
         print "Estimated period = %.2f frames" % period
         print "Estimated number of periods = %.2f" % (ts_seasonal.size / period)
 
-        #beatsPerMinute = period * 60.0 / framesPerSecDownsmp
-        #print "beats per minute at %f fps = %f" % (framesPerSecDownsmp, beatsPerMinute)
+        # store results
+        self.simMat_Bpass_ = simMat_Bpass
+        self.simMat_Trend_ = simMat_Trend
+        self.simMat_Seasonal_ = simMat_Seasonal
+        self.spectralEntropy_ = spectralEntropy
+
+        self.fid_best_ = fid_best
+        self.ts_ = ts
+        self.ts_bpass_ = ts_bpass
+        self.ts_trend_ = ts_trend
+        self.ts_seasonal_ = ts_seasonal
+        self.period_ = period
+
+    def _estimate_phase(self, imAnalyze):
+
+        self._extract_cardio_respiratory_signals(imAnalyze)
 
         # compute analytic signal, instantaneous phase and amplitude
-        ts_analytic = scipy.signal.hilbert(ts_seasonal - ts_seasonal.mean())
+        ts_analytic = scipy.signal.hilbert(
+            self.ts_seasonal_ - self.ts_seasonal_.mean())
         ts_instaamp = np.abs(ts_analytic)
         ts_instaphase = np.arctan2(np.imag(ts_analytic), np.real(ts_analytic))
         ts_instaphase_nmzd = (ts_instaphase + np.pi) / (2 * np.pi)
 
         # estimate instantaneous phase of trend component - breathing
-        ts_trend_analytic = scipy.signal.hilbert(ts_trend - ts_trend.mean())
+        ts_trend_analytic = scipy.signal.hilbert(
+            self.ts_trend_ - self.ts_trend_.mean())
         ts_trend_instaamp = np.abs(ts_trend_analytic)
         ts_trend_instaphase = np.arctan2(np.imag(ts_trend_analytic),
                                          np.real(ts_trend_analytic))
@@ -945,7 +983,7 @@ class USPGS(object):
             ).ravel()
 
             print 'Frames with bad respiration influence = %.2f%%' % (
-                100.0 * len(resp_ind) / len(ts))
+                100.0 * len(resp_ind) / len(self.ts_))
 
         # find similarity bounds at each phase using lowess
         phaseord_est = np.argsort(ts_instaphase_nmzd)
@@ -953,13 +991,13 @@ class USPGS(object):
         phaseord_est_wout_resp = [fid for fid in phaseord_est
                                   if fid not in resp_ind]
 
-        fid_lowess = fid_best
+        fid_lowess = self.fid_best_
         # fid_lowess = phaseord_est_wout_resp[0]
 
         assert(fid_lowess not in resp_ind)
 
         ph_wout_resp = ts_instaphase_nmzd[phaseord_est_wout_resp]
-        sim_wout_resp = simMat[fid_lowess, phaseord_est_wout_resp]
+        sim_wout_resp = self.simMat_[fid_lowess, phaseord_est_wout_resp]
 
         sim_lowess_reg = LowessRegression()
         sim_lowess_reg.fit(ph_wout_resp, sim_wout_resp, is_sorted=True)
@@ -967,25 +1005,13 @@ class USPGS(object):
         ts_lowess = sim_lowess_reg.predict(ts_instaphase_nmzd)
 
         # store results
-        self.simMat_Bpass_ = simMat_Bpass
-        self.simMat_Trend_ = simMat_Trend
-        self.simMat_Seasonal_ = simMat_Seasonal
-        self.spectralEntropy_ = spectralEntropy
-
-        self.fid_best_ = fid_best
-        self.ts_ = ts
-        self.ts_bpass_ = ts_bpass
-        self.ts_trend_ = ts_trend
-        self.ts_seasonal_ = ts_seasonal
-        self.period_ = period
-
         self.ts_analytic_ = ts_analytic
         self.ts_instaamp_ = ts_instaamp
         self.ts_instaphase_ = ts_instaphase
         self.ts_instaphase_nmzd_ = ts_instaphase_nmzd
 
         self.ts_trend_analytic_ = ts_trend_analytic
-        self.ts_trenda_instaamp_ = ts_trend_instaamp
+        self.ts_trend_instaamp_ = ts_trend_instaamp
         self.ts_trend_instaphase_ = ts_trend_instaphase
         self.ts_trend_instaphase_nmzd_ = ts_trend_instaphase_nmzd
 
@@ -1025,10 +1051,11 @@ def phaseDiff(phaseArr, maxPhase=1.0):
 
 
 def ncorr(imA, imB):
-    imA = (imA - imA.mean()) / imA.std()
-    imB = (imB - imB.mean()) / imB.std()
 
-    return np.mean(imA * imB)
+    corr = 1 - scipy.spatial.distance.cdist(
+        imA.ravel()[np.newaxis], imB.ravel()[np.newaxis], 'correlation')
+
+    return corr
 
 
 def rmse(imA, imB):
@@ -1402,6 +1429,45 @@ def gauss_similarity_kernel(x, mu, sigma):
     r = (x - mu)
     return np.exp(-r ** 2 / (2.0 * sigma ** 2))
 
+# band pass filter a signal
+def bpass_filter(sig, fps, pass_band_bpm, order=5):
+    
+    pass_band = np.array(pass_band_bpm) / 60.0
+    nyq = 0.5 * fps
+    b, a = scipy.signal.butter(order, pass_band / nyq, btype='band')
+    sig_bf = scipy.signal.filtfilt(b, a, sig)
+    
+    return sig_bf
+
+# low pass filter a signal
+def lpass_filter(sig, fps, cutoff_bpm, order=5):
+    
+    cutoff_freq = cutoff_bpm / 60.0
+    nyq = 0.5 * fps
+    b, a = scipy.signal.butter(5, cutoff_freq / nyq, btype='low')
+    sig_lpf = scipy.signal.filtfilt(b, a, sig)
+    
+    return sig_lpf
+
+# estimated phase using matched filtering with dominant frequency single-period sine and cosine waves 
+def matched_sincos_phase_estimation(sig, freq, framesPerSec):
+    
+    period = 1.0 / freq
+    
+    # generate single period sine and cosine signals    
+    nsamples = np.round(period * framesPerSec)    
+    t = np.linspace(0, period, nsamples)
+    
+    sin_sig = np.sin(2.0 * np.pi * freq * t)
+    cos_sig = np.cos(2.0 * np.pi * freq * t)    
+    
+    # performed matched filtering using sine and cosine signals
+    sin_corr = scipy.signal.correlate(sig, sin_sig, mode='same')
+    cos_corr = scipy.signal.correlate(sig, cos_sig, mode='same')
+    
+    phase = 1.0 - (np.arctan2(sin_corr, cos_corr) + np.pi) / (2.0 * np.pi)    
+    
+    return phase    
 
 class LowessRegression(object):
     def __init__(self, frac=0.2, it=3):
