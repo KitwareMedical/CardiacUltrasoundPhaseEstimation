@@ -401,9 +401,6 @@ class USPGS(object):
         if np.any(phaseVals < 0) or np.any(phaseVals > 1):
             raise ValueError('Invalid phase values')
 
-        phaseRecorded = self.ts_instaphase_nmzd_
-        simRecorded = self.ts_
-
         # set imInput
         if imInput is None:
             imInput = self.imInput_
@@ -415,8 +412,13 @@ class USPGS(object):
             fmask[exclude_frames] = False
 
             imInput = imInput[:, :, fmask]
-            phaseRecorded = phaseRecorded[fmask]
-            simRecorded = simRecorded[fmask]
+            phaseRecorded = self.ts_instaphase_nmzd_[fmask]
+            simRecorded = self.ts_[fmask]
+
+        else:
+
+            phaseRecorded = self.ts_instaphase_nmzd_
+            simRecorded = self.ts_
 
         # generate frames
         numOutFrames = len(phaseVals)
@@ -449,12 +451,18 @@ class USPGS(object):
 
                 else:
 
+                    fmaskWoutResp = fmask
+                    fmaskWoutResp[self.resp_ind_] = False
+
+                    phaseWoutResp = self.ts_instaphase_nmzd_[fmaskWoutResp]
+                    simWoutResp = self.ts_[fmaskWoutResp]
+
                     sim_lowess_reg = LowessRegression()
-                    sim_lowess_reg.fit(phaseRecorded, simRecorded)
+                    sim_lowess_reg.fit(phaseWoutResp, simWoutResp)
 
                 sigmaSim = kSim * sim_lowess_reg.residual_mad()
 
-                phaseSims = sim_lowess_reg.predict(phaseVals)
+                simLowess = sim_lowess_reg.predict(phaseVals)
 
             X = np.reshape(imInput,
                            (np.prod(imInput.shape[:2]), imInput.shape[2])).T
@@ -476,7 +484,7 @@ class USPGS(object):
                 if kSim is not None:
 
                     wSim = gauss_similarity_kernel(
-                        simRecorded, phaseSims[fid], sigmaSim).T
+                        simRecorded, simLowess[fid], sigmaSim).T
 
                     w = wPhase * wSim
 
@@ -641,16 +649,13 @@ class USPGS(object):
             reconstructed frames for each round of LKOCV.
         """
 
-        if k_mad is not None:
+        '''
+        valid_ind = [fid for fid in range(self.imInput_.shape[2])
+                     if (np.abs(self.ts_[fid] - self.ts_lowess_[fid]) <
+                         2.0 * self.sim_lowess_reg_.residual_mad())]
+        '''
 
-            valid_ind = [fid for fid in range(self.imInput_.shape[2])
-                          if (np.abs(self.ts_[fid] - self.ts_lowess_[fid]) <
-                              k_mad * self.sim_lowess_reg_.residual_mad())]
-
-        else:
-
-            valid_ind = [fid for fid in range(self.imInput_.shape[2])
-                         if fid not in self.resp_ind_]
+        valid_ind = [fid for fid in range(self.imInput_.shape[2]) if fid not in self.resp_ind_]
 
         mval = np.zeros(rounds)
 
@@ -687,7 +692,7 @@ class USPGS(object):
 
             imExclude = self.imInput_[:, :, ksel_ind].astype('float')
 
-            exclude_find = functools.reduce(np.union1d, (ksel_ind, self.resp_ind_, sim_phase_ind))
+            exclude_find = functools.reduce(np.union1d, (ksel_ind, sim_phase_ind))
 
             imSynth = self.generate_frames_from_phase_values(
                 ph_ksel, method=method, show_progress=False,
