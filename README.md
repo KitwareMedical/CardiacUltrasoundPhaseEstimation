@@ -8,7 +8,7 @@ The core algorithm is implemented in the class [uspgs.USPGS](https://github.com/
 Please see the docstrings to understand its functionality.
 
 There are two jupyter notebooks that will further help understand how to use the method:
-* [MICCAI_2017_experiments.ipynb](https://github.com/KitwareMedical/CardiacUltrasoundPhaseEstimation/blob/master/MICCAI_2017_experiments.ipynb) - contains the code used to generate the results for the MICCAI submission.
+* [publication_experiments.ipynb](https://github.com/KitwareMedical/CardiacUltrasoundPhaseEstimation/blob/master/publication_experiments.ipynb) - contains the code used to generate the results/figures for a paper.
 * [WinProbe-Experiments.ipynb](https://github.com/KitwareMedical/CardiacUltrasoundPhaseEstimation/blob/master/WinProbe-Experiments.ipynb) - shows how to apply the algorithm on WinProbe data.
 
 Prerequisites
