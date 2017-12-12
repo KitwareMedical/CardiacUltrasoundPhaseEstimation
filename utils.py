@@ -330,10 +330,15 @@ def generateGatedVideoUsingSplineInterp(imInput, numOutFrames, minFrame,
 
 
 def ncorr(imA, imB):
+    
     imA = (imA - imA.mean()) / imA.std()
     imB = (imB - imB.mean()) / imB.std()
-
-    return np.mean(imA * imB)
+    corr = np.mean(imA * imB)
+    
+    if np.isnan(corr):
+        corr = 0
+        
+    return corr
 
 
 def vis_checkerboard(im1, im2):
