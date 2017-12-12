@@ -486,6 +486,8 @@ class USPGS(object):
                     wSim = gauss_similarity_kernel(
                         simRecorded, simLowess[fid], sigmaSim).T
 
+                    wSim[wSim < 1e-6] = 1e-6
+                    
                     w = wPhase * wSim
 
                 w /= w.sum()
@@ -999,7 +1001,7 @@ class USPGS(object):
         fid_lowess = self.fid_best_
         # fid_lowess = phaseord_est_wout_resp[0]
 
-        assert(fid_lowess not in resp_ind)
+        # assert(fid_lowess not in resp_ind)
 
         ph_wout_resp = ts_instaphase_nmzd[phaseord_est_wout_resp]
         sim_wout_resp = self.simMat_[fid_lowess, phaseord_est_wout_resp]
@@ -1060,6 +1062,9 @@ def ncorr(imA, imB):
     corr = 1 - scipy.spatial.distance.cdist(
         imA.ravel()[np.newaxis], imB.ravel()[np.newaxis], 'correlation')
 
+    if np.isnan(corr):
+        corr = 0
+        
     return corr
 
 
